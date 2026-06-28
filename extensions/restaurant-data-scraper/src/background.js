@@ -39,8 +39,31 @@ const OFFSCREEN_DOCUMENT_PATH = 'src/offscreen.html';
 let isOffscreenReady = false;
 let offscreenReadyResolver = null;
 
+async function hasOffscreenDocument() {
+  if (!chrome.offscreen) return false;
+  if (chrome.runtime.getContexts) {
+    try {
+      const contexts = await chrome.runtime.getContexts({
+        contextTypes: ['OFFSCREEN_DOCUMENT'],
+        documentUrls: [chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH)]
+      });
+      return contexts.length > 0;
+    } catch (e) {
+      return false;
+    }
+  }
+  try {
+    const matchedClients = await self.clients.matchAll();
+    return matchedClients.some(
+      (c) => c.url === chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH)
+    );
+  } catch (e) {
+    return false;
+  }
+}
+
 async function setupOffscreenDocument() {
-  if (await chrome.offscreen.hasDocument()) {
+  if (await hasOffscreenDocument()) {
     isOffscreenReady = true;
     return;
   }
