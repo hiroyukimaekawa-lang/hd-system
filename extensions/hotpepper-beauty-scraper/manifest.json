@@ -1,0 +1,54 @@
+{
+  "manifest_version": 3,
+  "name": "HPB サロンリスト取得ツール",
+  "version": "3.3.0",
+  "description": "ホットペッパービューティーのサロン情報を一括取得します",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "tabs",
+    "downloads",
+    "offscreen",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://beauty.hotpepper.jp/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://beauty.hotpepper.jp/*"
+      ],
+      "js": [
+        "src/content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/offscreen.html"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
