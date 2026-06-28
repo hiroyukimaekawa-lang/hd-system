@@ -1,0 +1,39 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Node modules
+node_modules/
+
+# Secrets and environment
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+credentials.json
+client_secret.json
+
+# Business/Customer Data (Strictly Excluded)
+*.csv
+*.xlsx
+*.xls
+*_list.txt
+*営業リスト*
+*架電リスト*
+*顧客データ*
+temp_data/
+exports/
+out/
+dist/
+
+# Local zips or backups
+*.zip
+*.tar.gz
+*.tgz

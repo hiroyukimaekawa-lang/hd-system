@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HD事業部 業務ツールポータル</title>
+  <meta name="description" content="営業リスト作成・店舗データ取得・架電管理を一元化するHD事業部専用ツール一覧。社内の業務効率化ツールの集約サイトです。">
+  <link rel="stylesheet" href="css/style.css">
+  <!-- Material Symbols (Icons) -->
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
+</head>
+<body>
+
+  <!-- ── ヘッダー ── -->
+  <header class="site-header">
+    <div class="header-inner">
+      <div class="header-logo">
+        <div class="header-logo-icon">HD</div>
+        <div class="header-logo-text">
+          HD事業部 業務ツールポータル
+          <span>Operational Tools Hub</span>
+        </div>
+      </div>
+      <div class="header-spacer"></div>
+      <div class="header-stats">
+        <div class="header-stat" title="全登録機能数">
+          📁 全機能: <span id="h-stat-total" class="header-stat-num">-</span>件
+        </div>
+        <div class="header-stat" title="運用中の機能数">
+          <span class="header-stat-dot active"></span> 運用中: <span id="h-stat-active" class="header-stat-num">-</span>件
+        </div>
+        <div class="header-stat" title="改善中の機能数">
+          <span class="header-stat-dot improve"></span> 改善中: <span id="h-stat-improve" class="header-stat-num">-</span>件
+        </div>
+        <div class="header-stat" title="開発中の機能数">
+          <span class="header-stat-dot dev"></span> 開発中: <span id="h-stat-dev" class="header-stat-num">-</span>件
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── ファーストビュー (Hero) ── -->
+  <section class="hero">
+    <div class="hero-inner">
+      <div class="hero-badge">
+        <span class="hero-badge-dot"></span>
+        HD Division Internal Portal
+      </div>
+      <h1>HD事業部 業務ツールポータル</h1>
+      <p class="hero-subtitle">
+        店舗データ取得、営業リスト生成、コムデスク投入、架電管理からアポ最適化まで、<br>
+        HD事業部の業務効率化ツール・システムを一元管理する専用ポータルです。<br>
+        ツールを蓄積し、事業部全体のナレッジ向上と業務DXを推進します。
+      </p>
+
+      <div class="hero-stats">
+        <div class="hero-stat-card">
+          <div id="stat-total" class="hero-stat-num">-</div>
+          <div class="hero-stat-label">登録ツール数</div>
+        </div>
+        <div class="hero-stat-card">
+          <div id="stat-active" class="hero-stat-num" style="color: #4ADE80;">-</div>
+          <div class="hero-stat-label">運用中</div>
+        </div>
+        <div class="hero-stat-card">
+          <div id="stat-improve" class="hero-stat-num" style="color: #FBBF24;">-</div>
+          <div class="hero-stat-label">改善中</div>
+        </div>
+        <div class="hero-stat-card">
+          <div id="stat-dev" class="hero-stat-num" style="color: #60A5FA;">-</div>
+          <div class="hero-stat-label">開発中</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── メインエリア ── -->
+  <main class="main-content">
+
+    <!-- 検索 & フィルター -->
+    <div class="controls-area">
+      <!-- 検索バー -->
+      <div class="search-row">
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="search-input" placeholder="ツール名、カテゴリ、概要、キーワードで検索..." autocomplete="off">
+          <button id="clear-btn" class="clear-btn hidden">クリア</button>
+        </div>
+      </div>
+
+      <!-- カテゴリフィルター -->
+      <div class="filter-section">
+        <div class="filter-label">カテゴリから探す</div>
+        <div id="category-chips" class="filter-chips">
+          <!-- JSで動的生成 -->
+        </div>
+      </div>
+
+      <!-- ステータスフィルター -->
+      <div class="filter-section" style="margin-top: 16px;">
+        <div class="filter-label">ステータスから探す</div>
+        <div id="status-chips" class="filter-chips">
+          <!-- JSで動的生成 -->
+        </div>
+      </div>
+    </div>
+
+    <!-- リストヘッダー -->
+    <div class="section-header">
+      <h2 class="section-title">登録ツール一覧</h2>
+      <div id="result-count" class="result-count">
+        該当ツール: <strong>-</strong> 件 / 全 - 件
+      </div>
+    </div>
+
+    <!-- 機能カードグリッド -->
+    <div id="cards-grid" class="cards-grid">
+      <!-- JSで動的生成 -->
+    </div>
+
+    <!-- 更新履歴セクション -->
+    <div class="section-header" style="margin-top: 40px;">
+      <h2 class="section-title">システム更新・改善履歴</h2>
+    </div>
+    <div class="updates-section">
+      <div class="updates-header">
+        <div style="font-size:14px; font-weight:600; color:var(--color-text-2);">最新のアップデート</div>
+      </div>
+      <ul id="updates-list" class="updates-list">
+        <!-- JSで動的生成 -->
+      </ul>
+      <button id="show-more-updates" class="show-more-btn">過去の更新履歴を表示</button>
+    </div>
+
+  </main>
+
+  <!-- ── 詳細モーダル ── -->
+  <div id="modal-overlay" class="modal-overlay">
+    <div class="modal">
+      <header class="modal-header">
+        <div class="modal-header-top">
+          <div>
+            <div id="modal-cat" class="modal-category-tag">-</div>
+            <h2 id="modal-title" class="modal-title">-</h2>
+          </div>
+          <button id="modal-close-btn" class="modal-close-btn" aria-label="閉じる">&times;</button>
+        </div>
+        <div class="modal-badges">
+          <span id="modal-status" class="modal-status-badge">-</span>
+          <span id="modal-updated" class="modal-updated">-</span>
+        </div>
+      </header>
+
+      <div class="modal-body">
+        <!-- 概要 -->
+        <div>
+          <div class="modal-summary" id="modal-summary">-</div>
+        </div>
+
+        <!-- 課題と解決 -->
+        <div>
+          <div class="modal-section-title">解決する課題</div>
+          <p id="modal-problem" style="font-size:13px; color:var(--color-text-2); line-height:1.6;"></p>
+        </div>
+
+        <!-- 基本情報グリッド -->
+        <div class="info-grid">
+          <div class="info-item">
+            <div class="info-item-label">対象ユーザー</div>
+            <div class="info-item-value" id="modal-users">-</div>
+          </div>
+          <div class="info-item">
+            <div class="info-item-label">使用頻度</div>
+            <div class="info-item-value" id="modal-freq">-</div>
+          </div>
+        </div>
+
+        <!-- 用途 -->
+        <div>
+          <div class="modal-section-title">主な用途・目的</div>
+          <p id="modal-usecase" style="font-size:13px; color:var(--color-text-2); line-height:1.6;"></p>
+        </div>
+
+        <!-- 入出力 -->
+        <div class="io-row">
+          <div class="io-block">
+            <div class="io-block-label">📥 入力・トリガー</div>
+            <ul id="modal-inputs"></ul>
+          </div>
+          <div class="io-block">
+            <div class="io-block-label">📤 出力・成果物</div>
+            <ul id="modal-outputs"></ul>
+          </div>
+        </div>
+
+        <!-- 操作手順 -->
+        <div id="modal-steps-container">
+          <div class="modal-section-title">基本的な操作手順</div>
+          <div id="modal-steps" class="steps-list"></div>
+        </div>
+
+        <!-- 注意点 -->
+        <div id="modal-notes-container">
+          <div class="modal-section-title">使用上の注意・仕様</div>
+          <div id="modal-notes" class="notes-list"></div>
+        </div>
+
+        <!-- ロードマップ -->
+        <div id="modal-roadmap-container">
+          <div class="modal-section-title">今後の改善・開発ロードマップ</div>
+          <div id="modal-roadmap" class="roadmap-list"></div>
+        </div>
+
+        <!-- 関連リンク -->
+        <div id="modal-links-container">
+          <div class="modal-section-title">関連リンク・リソース</div>
+          <div id="modal-links" class="links-grid">
+            <!-- 動的リンクボタン -->
+          </div>
+        </div>
+      </div>
+
+      <footer class="modal-footer">
+        <button id="modal-close-footer" class="btn-secondary">閉じる</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ── フッター ── -->
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-brand">HD Division Operations & DX</div>
+      <div class="footer-meta">
+        <span>&copy; 2026 HD Division Tools Portal. All rights reserved.</span>
+        <span style="opacity: 0.5;">社内専用ツールポータル - 外部への公開・URL共有禁止</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>
