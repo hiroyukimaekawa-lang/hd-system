@@ -714,6 +714,7 @@ async function runCrawlTask(tabId) {
   const task = activeTasks.get(tabId);
   if (!task) return;
 
+  const isPopularSubtask = typeof tabId === 'string' && tabId.includes('_pg_');
   let collected = 0;
   let pageNum = 1;
   let currentListUrl = task.listUrl;
@@ -957,17 +958,19 @@ async function runCrawlTask(tabId) {
     // undefined をフィルタリングして順序を詰める
     task.results = task.results.filter(Boolean);
 
-    sendToBackground(tabId, 'DONE', {
-      collected: task.results.length,
-      results: task.results,
-      metadata: task.metadata,
-      successCount: task.stats.successCount,
-      failedCount: task.stats.failedCount,
-      retryingCount: task.stats.retryingCount,
-      isThrottling: task.stats.isThrottling,
-      activeConcurrency: 0,
-      activeDelay: 0
-    });
+    if (!isPopularSubtask) {
+      sendToBackground(tabId, 'DONE', {
+        collected: task.results.length,
+        results: task.results,
+        metadata: task.metadata,
+        successCount: task.stats.successCount,
+        failedCount: task.stats.failedCount,
+        retryingCount: task.stats.retryingCount,
+        isThrottling: task.stats.isThrottling,
+        activeConcurrency: 0,
+        activeDelay: 0
+      });
+    }
 
     const mediaName = task.metadata.media === 'tabelog'
       ? '食べログ'
@@ -976,17 +979,20 @@ async function runCrawlTask(tabId) {
     const industry = task.metadata.industry || '';
     const count = task.results.length;
 
-    let title = '取得完了';
+    let title = count === 0 ? '取得完了 (該当なし)' : '取得完了';
     let message = `${area} ${industry} (${mediaName}) の取得が完了しました。計 ${count} 件`;
 
-    if (collected >= task.maxItems) title = '取得完了 (上限到達)';
-    else if (collected < task.maxItems) {
+    if (task.stopRequested) {
       title = '取得停止';
       message = `${area} ${industry} (${mediaName}) の取得を停止しました。計 ${count} 件取得済み`;
+    } else if (collected >= task.maxItems) {
+      title = '取得完了 (上限到達)';
     }
 
-    chrome.runtime.sendMessage({ target: 'background', type: 'SHOW_NOTIFICATION', title, message });
-    if (task.results.length > 0) {
+    if (!isPopularSubtask) {
+      chrome.runtime.sendMessage({ target: 'background', type: 'SHOW_NOTIFICATION', title, message });
+    }
+    if (!isPopularSubtask && task.results.length > 0) {
       chrome.runtime.sendMessage({
         target: 'background',
         type: 'DOWNLOAD_CSV',
@@ -1051,13 +1057,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'STOP_CRAWL') {
     const task = activeTasks.get(tabId);
     if (task) {
+      task.stopRequested = true;
       task.running = false;
       task.abortController?.abort();
     }
     const popularTask = activeTasks.get(tabId + '_popular');
     if (popularTask) {
+      popularTask.stopRequested = true;
       popularTask.running = false;
       popularTask.abortController?.abort();
+    }
+    const popularPrefix = `${tabId}_pg_`;
+    for (const [key, runningTask] of activeTasks.entries()) {
+      if (typeof key === 'string' && key.startsWith(popularPrefix)) {
+        runningTask.stopRequested = true;
+        runningTask.running = false;
+        runningTask.abortController?.abort();
+      }
     }
     sendResponse({ ok: true });
     return;

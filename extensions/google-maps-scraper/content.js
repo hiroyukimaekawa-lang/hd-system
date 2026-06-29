@@ -100,8 +100,9 @@ async function waitForPanelFieldsReady(options = {}, timeoutMs = 5500) {
     const nameMatches =
       expectedNames.length === 0 ||
       expectedNames.some(name => isLikelySamePlaceName(currentName, name));
+    const panelLooksUsable = usableName || currentUrl.includes('/maps/place/');
 
-    if (identityChanged && nameMatches) {
+    if (panelLooksUsable && (identityChanged || nameMatches)) {
       if (!identityReadyAt) identityReadyAt = Date.now();
 
       if (currentAddress) {
@@ -111,9 +112,9 @@ async function waitForPanelFieldsReady(options = {}, timeoutMs = 5500) {
         }
         const addressChanged = !previousAddress || currentAddress !== previousAddress;
         const addressStable = Date.now() - addressStableAt >= 240;
-        const waitedLongEnoughForSameAddress = Date.now() - identityReadyAt >= 1400;
+        const waitedLongEnoughForSameAddress = Date.now() - identityReadyAt >= 900;
         if (addressStable && (addressChanged || waitedLongEnoughForSameAddress)) return true;
-      } else if (Date.now() - identityReadyAt >= 1200) {
+      } else if (Date.now() - identityReadyAt >= 700) {
         return true;
       }
     }
@@ -1185,10 +1186,11 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
             previousName: previousPanelName,
             previousUrl: previousPanelUrl,
             previousAddress: previousPanelAddress
-          }, 5500);
+          }, 3000);
           addTiming(speedStats, 'panelWait', performance.now() - fieldWaitStarted);
 
-          if ((changed.name === previousPanelName && changed.url === previousPanelUrl) || !fieldsReady) {
+          const panelDidNotChange = changed.name === previousPanelName && changed.url === previousPanelUrl;
+          if (panelDidNotChange) {
             // 切り替わらなかった: フォールバックで閉じてから開く
             reportV3Log(`パネル切り替わらず フォールバック: ${cardName || url}`);
             const backMs0 = performance.now();
@@ -1204,7 +1206,7 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
               previousName: previousPanelName,
               previousUrl: previousPanelUrl,
               previousAddress: previousPanelAddress
-            }, 5500);
+            }, 3000);
             addTiming(speedStats, 'panelWait', performance.now() - panelWaitFallback);
             if (!fallbackReady || !fallbackFieldsReady) {
               speedStats.failed++;
@@ -1212,6 +1214,8 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
               logSkip(item, '詳細取得失敗(フォールバック)', cardName || url);
               continue;
             }
+          } else if (!fieldsReady) {
+            reportV3Log(`詳細欄更新待ちタイムアウト: ${cardName || url}（取得は続行）`);
           }
         } else {
           // 詳細パネルが閉じている: 通常通りクリック
@@ -1237,14 +1241,10 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
             previousName: previousPanelName,
             previousUrl: previousPanelUrl,
             previousAddress: previousPanelAddress
-          }, 5500);
+          }, 3000);
           addTiming(speedStats, 'panelWait', performance.now() - fieldWaitStarted);
           if (!fieldsReady) {
-            speedStats.failed++;
-            await closeDetailPanel();
-            queuedOrProcessingUrls.delete(url);
-            logSkip(item, '詳細取得失敗(詳細欄未更新)', cardName || url);
-            continue;
+            reportV3Log(`詳細欄更新待ちタイムアウト: ${cardName || url}（取得は続行）`);
           }
         }
 
