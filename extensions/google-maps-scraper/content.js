@@ -139,6 +139,21 @@ function waitUntilResultCardsChanged(previousCount, container, timeoutMs = 2000)
   });
 }
 
+function getScrollableMetrics(container) {
+  const target = container || getScrollContainer();
+  if (!target) return { top: 0, height: 0, client: 0, remaining: 0, linkCount: 0 };
+  const top = target.scrollTop || 0;
+  const height = target.scrollHeight || 0;
+  const client = target.clientHeight || 0;
+  return {
+    top,
+    height,
+    client,
+    remaining: Math.max(0, height - client - top),
+    linkCount: getResultLinks(target).length
+  };
+}
+
 function getCurrentQuery() {
   return document.querySelector('input#searchboxinput')?.value?.trim() || '';
 }
@@ -673,11 +688,9 @@ async function scrollResultsList(container, lastProcessedItem = null) {
   const target = container || getScrollContainer() || document.querySelector('[role="feed"]');
   if (!target) return false;
 
-  const beforeTop = target.scrollTop || 0;
-  const beforeHeight = target.scrollHeight || 0;
-  const beforeLinks = getResultLinks(target).length;
+  const before = getScrollableMetrics(target);
 
-  let distance = Math.max(700, Math.floor((target.clientHeight || 600) * 0.72));
+  let distance = Math.max(900, Math.floor((target.clientHeight || 600) * 1.05));
 
   // 最後に処理したカードを基準にスクロール量を決定
   if (lastProcessedItem) {
@@ -687,32 +700,53 @@ async function scrollResultsList(container, lastProcessedItem = null) {
       const cardRect = cardEl.getBoundingClientRect();
       const cardOffset = cardRect.bottom - targetRect.top;
       if (Number.isFinite(cardOffset) && cardOffset > 0) {
-        distance = Math.max(450, Math.min(cardOffset + 80, (target.clientHeight || 600) * 0.9));
+        distance = Math.max(distance, Math.min(cardOffset + 180, (target.clientHeight || 600) * 1.35));
       }
     }
   }
 
+  const wheelTargets = [
+    target,
+    target.closest('[role="feed"]'),
+    target.querySelector('[role="feed"]'),
+    document.querySelector('[role="feed"]'),
+    document.scrollingElement,
+    document.body
+  ].filter(Boolean);
+
   try {
     target.focus?.();
     target.scrollBy({ top: distance, behavior: 'auto' });
+    target.scrollTop = Math.min((target.scrollTop || 0) + distance, target.scrollHeight || 0);
   } catch (_) {
-    target.scrollTop = beforeTop + distance;
+    target.scrollTop = before.top + distance;
   }
 
-  target.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: distance }));
+  for (const wheelTarget of new Set(wheelTargets)) {
+    wheelTarget.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: distance }));
+    wheelTarget.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', code: 'PageDown', keyCode: 34, which: 34, bubbles: true }));
+  }
+  window.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: distance }));
   document.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: distance }));
-  target.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', code: 'PageDown', keyCode: 34, which: 34, bubbles: true }));
   target.dispatchEvent(new Event('scroll', { bubbles: true }));
 
   const lastLink = getResultLinks(target).at(-1);
   try { lastLink?.scrollIntoView({ block: 'end', behavior: 'auto' }); } catch (_) { }
+  await sleep(250);
+  try {
+    target.scrollBy({ top: Math.floor(distance * 0.7), behavior: 'auto' });
+    target.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: Math.floor(distance * 0.7) }));
+  } catch (_) {}
 
-  // 動的待機: カード数が増えるか、最大2秒待つ
-  await waitUntilResultCardsChanged(beforeLinks, target, 2000);
+  // 動的待機: カード数が増えるか、最大3秒待つ
+  await waitUntilResultCardsChanged(before.linkCount, target, 3000);
+  const after = getScrollableMetrics(target);
 
-  return (target.scrollTop || 0) !== beforeTop
-    || (target.scrollHeight || 0) !== beforeHeight
-    || getResultLinks(target).length !== beforeLinks;
+  return {
+    moved: after.top !== before.top || after.height !== before.height || after.linkCount !== before.linkCount,
+    before,
+    after
+  };
 }
 
 // =====================================================================
@@ -1084,9 +1118,6 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
       if (newSeenCount > 0) {
         noNewCardCount = 0;
         speedStats.scrollNoIncreaseCount = 0;
-      } else if (!items.length) {
-        noNewCardCount++;
-        speedStats.scrollNoIncreaseCount = noNewCardCount;
       }
     }
 
@@ -1100,17 +1131,30 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
         speedStats.scrollEndReason = 'max_scroll_count';
         break;
       }
-      if (noNewCardCount >= 3) {
+      const metrics = getScrollableMetrics(container);
+      if (noNewCardCount >= 8 && metrics.remaining < 80) {
         speedStats.scrollEndReason = 'no_new_visible_cards';
         break;
       }
 
       const scrollStartedAt = performance.now();
-      await scrollResultsList(container, lastProcessedItem);
+      const scrollResult = await scrollResultsList(container, lastProcessedItem);
       addTiming(speedStats, 'scroll', performance.now() - scrollStartedAt);
       speedStats.scrollCount++;
       scrollAttempts++;
       container = getScrollContainer() || container;
+
+      const afterMetrics = scrollResult?.after || getScrollableMetrics(container);
+      if (scrollResult?.moved || afterMetrics.remaining > 80) {
+        noNewCardCount = Math.max(0, noNewCardCount - 1);
+      } else {
+        noNewCardCount++;
+      }
+      speedStats.scrollNoIncreaseCount = noNewCardCount;
+
+      if (scrollAttempts % 3 === 0) {
+        reportV3Log(`スクロール継続確認: ${scrollAttempts}回 / 残り${Math.round(afterMetrics.remaining)}px / 新規なし連続${noNewCardCount}`);
+      }
       continue;
     }
 

@@ -88,10 +88,29 @@ function isTabelogRestaurantUrl(href) {
   }
 
   const path = url.pathname;
-  if (!/\/\d{8}\/?$/.test(path)) return false;
+  if (!/\/\d{6,10}\/?$/.test(path)) return false;
   if (/\/(?:rvwr|rstLst|dtlrvwlst|dtlmenu|party|map|photo|coupon|award)\//.test(path)) return false;
-  return /\/[a-z]+\/A\d+\/A\d+\/\d{8}\/?$/.test(path)
-    || /\/\d{8}\/?$/.test(path);
+  return /\/[a-z]+\/A\d+\/A\d+\/\d{6,10}\/?$/.test(path)
+    || /\/\d{6,10}\/?$/.test(path);
+}
+
+function getTabelogLinkDiagnostics(doc, baseUrl) {
+  const anchors = Array.from(doc.querySelectorAll('a[href]'));
+  const numericUrls = anchors
+    .map(a => resolveUrl(a.getAttribute('href') || '', baseUrl).split('?')[0])
+    .filter(href => {
+      try {
+        return /tabelog\.com/.test(href) && /\/\d{5,12}\/?$/.test(new URL(href).pathname);
+      } catch (_) {
+        return false;
+      }
+    })
+    .slice(0, 3);
+  return {
+    anchors: anchors.length,
+    cards: doc.querySelectorAll('.list-rst, .list-rst__wrap, .js-rst-cassette-wrap, [class*="list-rst"]').length,
+    numericSamples: numericUrls
+  };
 }
 
 function isLikelyNextAnchor(a) {
@@ -493,7 +512,7 @@ async function fetchAndParseDetail(link, siteType, context = {}, timeoutMs = 100
     const combinedSignal = signal || controller.signal;
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    const res = await fetch(link, { signal: combinedSignal });
+    const res = await fetch(link, { signal: combinedSignal, credentials: 'include' });
     clearTimeout(timer);
 
     if (res.status === 403 || res.status === 429) {
@@ -659,7 +678,7 @@ async function fetchAndParseDetail(link, siteType, context = {}, timeoutMs = 100
           }
           if (!telUrl) telUrl = (link.endsWith('/') ? link : link + '/') + 'tel/';
           await sleep(500);
-          const telRes = await fetch(telUrl, { signal: signal || AbortSignal.timeout(8000) });
+          const telRes = await fetch(telUrl, { signal: signal || AbortSignal.timeout(8000), credentials: 'include' });
           const telDoc = new DOMParser().parseFromString(await telRes.text(), 'text/html');
           const telNode = telDoc.querySelector('.telephoneNumber, .tel, .telephone, a[href^="tel:"]');
           if (telNode) {
@@ -732,8 +751,16 @@ async function runCrawlTask(tabId) {
       sendToBackground(tabId, 'PAGE_START', { page: pageNum, collected, siteName, genreLabel });
 
       await sleep(DELAY_LIST_FETCH);
-      const res = await fetch(currentListUrl);
+      const res = await fetch(currentListUrl, { credentials: 'include' });
+      if (res.status === 403 || res.status === 429) {
+        sendToBackground(tabId, 'ERROR', { message: `${genreLabel} 一覧ページでアクセス制限(${res.status})を検知しました。待機時間を長めにして再実行してください。` });
+        break;
+      }
       const html = await res.text();
+      if (/アクセスが拒否されました|一時的に制限|アクセスが集中|Cloudflare|Robot Check|Security Check/i.test(html)) {
+        sendToBackground(tabId, 'ERROR', { message: `${genreLabel} 一覧ページがブロック画面になっています。待機時間を長めにして再実行してください。` });
+        break;
+      }
       const parser = new DOMParser();
       const doc = parser.parseFromString(html, 'text/html');
 
@@ -759,6 +786,12 @@ async function runCrawlTask(tabId) {
       links = links.slice(0, remaining);
 
       if (links.length === 0) {
+        if (siteType === 'tabelog') {
+          const diag = getTabelogLinkDiagnostics(doc, currentListUrl);
+          sendToBackground(tabId, 'INFO', {
+            message: `${genreLabel} ${pageNum}ページ目: 食べログ店舗リンク診断 anchors=${diag.anchors}, cards=${diag.cards}, samples=${diag.numericSamples.join(' / ') || 'なし'}`
+          });
+        }
         sendToBackground(tabId, 'INFO', { message: `${genreLabel} ${pageNum}ページ目: 新規リンクなし → 終了` });
         break;
       }
@@ -1145,7 +1178,7 @@ async function extractGenreLinks(listUrl, siteType, tabId) {
   }
 
   try {
-    const res = await fetch(listUrl);
+    const res = await fetch(listUrl, { credentials: 'include' });
     const html = await res.text();
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const links = [];
