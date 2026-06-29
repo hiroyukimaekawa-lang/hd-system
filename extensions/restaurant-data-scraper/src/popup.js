@@ -19,6 +19,113 @@ const dlBtn = document.getElementById('dlBtn');
 const previewSection = document.getElementById('previewSection');
 const previewList = document.getElementById('previewList');
 
+// 高度な設定・詳細カウンターのDOM
+const tabelogConcurrency = document.getElementById('tabelogConcurrency');
+const tabelogDelay = document.getElementById('tabelogDelay');
+const hotpepperConcurrency = document.getElementById('hotpepperConcurrency');
+const hotpepperDelay = document.getElementById('hotpepperDelay');
+const maxRetries = document.getElementById('maxRetries');
+const fetchTimeout = document.getElementById('fetchTimeout');
+
+const cntSuccess = document.getElementById('cntSuccess');
+const cntFailed = document.getElementById('cntFailed');
+const cntRetrying = document.getElementById('cntRetrying');
+const throttlingIndicator = document.getElementById('throttlingIndicator');
+const activeParams = document.getElementById('activeParams');
+const currentConcurrency = document.getElementById('currentConcurrency');
+const currentDelay = document.getElementById('currentDelay');
+
+// 設定のバリデーションと保存
+function validateInputs() {
+  let tc = parseInt(tabelogConcurrency.value) || 5;
+  if (tc < 1) tc = 1;
+  if (tc > 10) tc = 10;
+  tabelogConcurrency.value = tc;
+
+  let td = parseInt(tabelogDelay.value) || 800;
+  if (td < 200) td = 200;
+  if (td > 3000) td = 3000;
+  tabelogDelay.value = td;
+
+  let hc = parseInt(hotpepperConcurrency.value) || 6;
+  if (hc < 1) hc = 1;
+  if (hc > 10) hc = 10;
+  hotpepperConcurrency.value = hc;
+
+  let hd = parseInt(hotpepperDelay.value) || 500;
+  if (hd < 200) hd = 200;
+  if (hd > 3000) hd = 3000;
+  hotpepperDelay.value = hd;
+
+  let mr = parseInt(maxRetries.value);
+  if (isNaN(mr) || mr < 0) mr = 0;
+  if (mr > 3) mr = 3;
+  maxRetries.value = mr;
+
+  let ft = parseInt(fetchTimeout.value) || 10;
+  if (ft < 5) ft = 5;
+  if (ft > 30) ft = 30;
+  fetchTimeout.value = ft;
+}
+
+function saveSettings() {
+  validateInputs();
+  chrome.storage.local.set({
+    tabelogConcurrency: parseInt(tabelogConcurrency.value),
+    tabelogDelay: parseInt(tabelogDelay.value),
+    hotpepperConcurrency: parseInt(hotpepperConcurrency.value),
+    hotpepperDelay: parseInt(hotpepperDelay.value),
+    maxRetries: parseInt(maxRetries.value),
+    fetchTimeout: parseInt(fetchTimeout.value)
+  });
+}
+
+[tabelogConcurrency, tabelogDelay, hotpepperConcurrency, hotpepperDelay, maxRetries, fetchTimeout].forEach(el => {
+  el.addEventListener('change', saveSettings);
+});
+
+function loadSettings() {
+  chrome.storage.local.get([
+    'tabelogConcurrency', 'tabelogDelay', 'hotpepperConcurrency', 'hotpepperDelay', 'maxRetries', 'fetchTimeout'
+  ], (res) => {
+    if (res.tabelogConcurrency != null) tabelogConcurrency.value = res.tabelogConcurrency;
+    if (res.tabelogDelay != null) tabelogDelay.value = res.tabelogDelay;
+    if (res.hotpepperConcurrency != null) hotpepperConcurrency.value = res.hotpepperConcurrency;
+    if (res.hotpepperDelay != null) hotpepperDelay.value = res.hotpepperDelay;
+    if (res.maxRetries != null) maxRetries.value = res.maxRetries;
+    if (res.fetchTimeout != null) fetchTimeout.value = res.fetchTimeout;
+    validateInputs();
+  });
+}
+
+function updateCounters(msg) {
+  if (msg.successCount != null) cntSuccess.textContent = msg.successCount;
+  if (msg.failedCount != null) cntFailed.textContent = msg.failedCount;
+  if (msg.retryingCount != null) cntRetrying.textContent = msg.retryingCount;
+  
+  if (msg.isThrottling) {
+    throttlingIndicator.classList.remove('hidden');
+  } else {
+    throttlingIndicator.classList.add('hidden');
+  }
+  
+  if (msg.activeConcurrency != null && msg.activeDelay != null) {
+    activeParams.style.display = 'block';
+    currentConcurrency.textContent = msg.activeConcurrency;
+    currentDelay.textContent = msg.activeDelay;
+  } else {
+    activeParams.style.display = 'none';
+  }
+}
+
+function resetCounters() {
+  cntSuccess.textContent = '0';
+  cntFailed.textContent = '0';
+  cntRetrying.textContent = '0';
+  throttlingIndicator.classList.add('hidden');
+  activeParams.style.display = 'none';
+}
+
 // ============================================================
 // 状態
 // ============================================================
@@ -115,31 +222,29 @@ function esc(s) {
 // CSV 生成・ダウンロード
 // ============================================================
 function toCSV(data) {
-  const headers = ['店名', 'ジャンル', '住所', '電話番号', '定休日', '営業日', '営業開始', '営業終了', 'URL', '媒体'];
+  const headers = [
+    '店名', 'ジャンル', '取得元ジャンル', '都道府県', '市区町村', '住所', '電話番号',
+    '定休日', '営業日', '営業開始A', '営業終了A', '営業開始B', '営業終了B',
+    '営業時間原文', 'URL', 'HP有無', '媒体', '取得元URL', '取得日時'
+  ];
+  
   const keyMapping = {
-    '店名': 'name',
-    'ジャンル': 'genre',
-    '住所': 'address',
-    '電話番号': 'phone',
-    '定休日': 'regular_holiday',
-    '営業日': 'business_days',
-    '営業開始': 'open_time',
-    '営業終了': 'close_time',
-    'URL': 'url',
-    '媒体': 'source'
+    '店名': 'name', 'ジャンル': 'genre', '取得元ジャンル': 'sourceGenre',
+    '都道府県': 'prefecture', '市区町村': 'city', '住所': 'address', '電話番号': 'phone',
+    '定休日': 'regularHoliday', '営業日': 'businessDays', 
+    '営業開始A': 'openTimeA', '営業終了A': 'closeTimeA', 
+    '営業開始B': 'openTimeB', '営業終了B': 'closeTimeB',
+    '営業時間原文': 'rawHours', 'URL': 'url', 'HP有無': 'hasWebsite', 
+    '媒体': 'source', '取得元URL': 'sourceUrl', '取得日時': 'scrapedAt'
   };
 
   const ef = v => {
     const s = String(v ?? '');
     return (s.includes(',') || s.includes('\n') || s.includes('"'))
-      ? '"' + s.replace(/"/g, '""') + '"'
-      : s;
+      ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
 
-  const rows = data.map(r =>
-    headers.map(h => ef(r[keyMapping[h]])).join(',')
-  );
-
+  const rows = data.map(r => headers.map(h => ef(r[keyMapping[h]])).join(','));
   return '\uFEFF' + headers.join(',') + '\n' + rows.join('\n');
 }
 
@@ -191,12 +296,16 @@ chrome.runtime.onMessage.addListener((msg) => {
     case 'PAGE_START':
       addLog(`📄 ${msg.siteName ? msg.siteName + ' ' : ''}${msg.page}ページ目 開始 (取得済み: ${msg.collected}件)`, 'info');
       setStatus('running', `${msg.page}ページ目をクロール中...`, `取得済み ${msg.collected} 件`);
+      updateCounters(msg);
       break;
 
     case 'PROGRESS':
-      addLog(`✅ ${msg.latest}`, 'good');
+      if (msg.latest) {
+        addLog(`✅ ${msg.latest}`, 'good');
+      }
       setStatus('running', `取得中... ${msg.collected} 件`, `${msg.page}ページ目`);
       updateProgress(msg.collected, msg.maxItems);
+      updateCounters(msg);
       chrome.runtime.sendMessage({ action: 'GET_RESULTS', tabId: currentTabId }, res => {
         if (res?.results) {
           allResults = res.results;
@@ -209,11 +318,13 @@ chrome.runtime.onMessage.addListener((msg) => {
 
     case 'INFO':
       addLog(`ℹ️ ${msg.message}`, 'info');
+      updateCounters(msg);
       break;
 
     case 'ERROR':
       addLog(`❌ ${msg.message}`, 'err');
       setStatus('error', 'エラーが発生しました', msg.message);
+      updateCounters(msg);
       setButtons(false);
       break;
 
@@ -223,6 +334,7 @@ chrome.runtime.onMessage.addListener((msg) => {
       addLog(`🎉 完了！ 合計 ${allResults.length} 件取得`, 'good');
       setStatus('done', `取得完了 ${allResults.length} 件`, 'CSVダウンロードできます');
       progressBar.style.width = '100%';
+      updateCounters(msg);
       setButtons(false);
       renderPreview(allResults);
       if (allResults.length > 0) dlBtn.disabled = false;
@@ -256,6 +368,7 @@ startBtn.addEventListener('click', async () => {
   }
 
   allResults = [];
+  resetCounters();
   logScroll.innerHTML = '';
   previewList.innerHTML = '';
   previewSection.style.display = 'none';
@@ -273,6 +386,12 @@ startBtn.addEventListener('click', async () => {
     tabId: tab.id,
     listUrl: tab.url,
     maxItems: maxItems,
+    tabelogConcurrency: parseInt(tabelogConcurrency.value) || 5,
+    tabelogDelay: parseInt(tabelogDelay.value) || 800,
+    hotpepperConcurrency: parseInt(hotpepperConcurrency.value) || 6,
+    hotpepperDelay: parseInt(hotpepperDelay.value) || 500,
+    maxRetries: parseInt(maxRetries.value) ?? 2,
+    fetchTimeout: parseInt(fetchTimeout.value) || 10,
   }, res => {
     if (!res?.ok) {
       addLog('クロール開始失敗: ' + (res?.error || '不明'), 'err');
@@ -327,6 +446,7 @@ popularGenreBtn.addEventListener('click', async () => {
 
   // UI リセット
   allResults = [];
+  resetCounters();
   logScroll.innerHTML = '';
   previewList.innerHTML = '';
   previewSection.style.display = 'none';
@@ -344,6 +464,12 @@ popularGenreBtn.addEventListener('click', async () => {
     tabId: tab.id,
     listUrl: tab.url,
     maxItems: maxItems,
+    tabelogConcurrency: parseInt(tabelogConcurrency.value) || 5,
+    tabelogDelay: parseInt(tabelogDelay.value) || 800,
+    hotpepperConcurrency: parseInt(hotpepperConcurrency.value) || 6,
+    hotpepperDelay: parseInt(hotpepperDelay.value) || 500,
+    maxRetries: parseInt(maxRetries.value) ?? 2,
+    fetchTimeout: parseInt(fetchTimeout.value) || 10,
   }, res => {
     if (!res?.ok) {
       addLog('人気ジャンル一括取得 開始失敗: ' + (res?.error || '不明'), 'err');
@@ -356,6 +482,7 @@ popularGenreBtn.addEventListener('click', async () => {
 // 起動時
 // ============================================================
 (async () => {
+  loadSettings();
   const val = parseInt(maxSlider.value);
   if (val >= 500) {
     maxItems = Infinity;

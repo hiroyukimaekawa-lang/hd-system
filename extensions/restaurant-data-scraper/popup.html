@@ -372,6 +372,39 @@
     </div>
   </div>
 
+  <!-- 高度な設定 -->
+  <div class="section">
+    <details id="advancedSettings">
+      <summary style="cursor: pointer; font-weight: 700; color: var(--muted); margin-bottom: 5px; outline: none; user-select: none;">⚙️ 高度な設定 (速度・リトライ)</summary>
+      <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span>食べログ 並行数:</span>
+          <input type="number" id="tabelogConcurrency" min="1" max="10" value="5" style="width: 50px; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 2px 4px; border-radius: 4px; text-align: center;" />
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span>食べログ 待機時間 (ms):</span>
+          <input type="number" id="tabelogDelay" min="200" max="3000" step="100" value="800" style="width: 60px; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 2px 4px; border-radius: 4px; text-align: center;" />
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span>ホットペッパー 並行数:</span>
+          <input type="number" id="hotpepperConcurrency" min="1" max="10" value="6" style="width: 50px; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 2px 4px; border-radius: 4px; text-align: center;" />
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span>ホットペッパー 待機時間 (ms):</span>
+          <input type="number" id="hotpepperDelay" min="200" max="3000" step="100" value="500" style="width: 60px; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 2px 4px; border-radius: 4px; text-align: center;" />
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span>最大リトライ回数:</span>
+          <input type="number" id="maxRetries" min="0" max="3" value="2" style="width: 50px; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 2px 4px; border-radius: 4px; text-align: center;" />
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span>詳細タイムアウト (秒):</span>
+          <input type="number" id="fetchTimeout" min="5" max="30" value="10" style="width: 50px; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 2px 4px; border-radius: 4px; text-align: center;" />
+        </div>
+      </div>
+    </details>
+  </div>
+
   <!-- ステータス -->
   <div class="section">
     <div class="label">ステータス</div>
@@ -380,6 +413,16 @@
       <div class="status-body">
         <div class="status-main" id="statusMain">対応サイトの検索結果ページを開いてください</div>
         <div class="status-sub" id="statusSub">食べログ・ホットペッパー対応</div>
+        <!-- 詳細カウンター -->
+        <div id="statusCounters" style="display: flex; gap: 10px; margin-top: 5px; font-size: 10px; color: var(--muted); flex-wrap: wrap;">
+          <span>🟢 成功: <strong id="cntSuccess" style="color: var(--green);">0</strong></span>
+          <span>🔴 失敗: <strong id="cntFailed" style="color: var(--red);">0</strong></span>
+          <span>🔄 リトライ中: <strong id="cntRetrying" style="color: var(--yellow);">0</strong></span>
+          <span class="hidden" id="throttlingIndicator" style="color: var(--red); font-weight: bold;">⚠️ 減速中</span>
+        </div>
+        <div id="activeParams" style="margin-top: 4px; font-size: 9px; color: var(--muted); display: none;">
+          現在の設定: 並行数 <span id="currentConcurrency">-</span> / 待機 <span id="currentDelay">-</span>ms
+        </div>
       </div>
     </div>
     <div class="progress-wrap" id="progressWrap" style="margin-top:8px">
@@ -411,7 +454,7 @@
     <div class="preview-scroll" id="previewList"></div>
   </div>
 
-  <div class="footer">アクセス間隔 1.5秒 · 詳細ページから電話番号・住所を取得</div>
+  <div class="footer">詳細ページから電話番号・住所を取得 · 非同期キュー対応</div>
 
   <script src="src/popup.js"></script>
 </body>
