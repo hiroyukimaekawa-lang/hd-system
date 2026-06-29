@@ -78,6 +78,22 @@ function addUniqueLink(links, href) {
   if (normalized && !links.includes(normalized)) links.push(normalized);
 }
 
+function isTabelogRestaurantUrl(href) {
+  if (!href || !/tabelog\.com/.test(href)) return false;
+  let url;
+  try {
+    url = new URL(href);
+  } catch (_) {
+    return false;
+  }
+
+  const path = url.pathname;
+  if (!/\/\d{8}\/?$/.test(path)) return false;
+  if (/\/(?:rvwr|rstLst|dtlrvwlst|dtlmenu|party|map|photo|coupon|award)\//.test(path)) return false;
+  return /\/[a-z]+\/A\d+\/A\d+\/\d{8}\/?$/.test(path)
+    || /\/\d{8}\/?$/.test(path);
+}
+
 function isLikelyNextAnchor(a) {
   if (!a) return false;
   const text = (a.textContent || '').replace(/\s+/g, '');
@@ -369,25 +385,30 @@ function normalizeBusinessHours(hoursText) {
 
 function tabelogGetLinks(doc, baseUrl) {
   const links = [];
-  const RST_URL_RE = /tabelog\.com\/[a-z]+\/A\d+\/A\d+\/\d+\//;
   const primary = doc.querySelectorAll([
     '.list-rst__rst-name-target',
     '.js-rst-cassette-wrap .list-rst__name a',
     'a.list-rst__name-main',
     '.list-rst__name a[href]',
+    '.list-rst__rst-name a[href]',
+    '.list-rst__rst-name-main a[href]',
+    '.rst-name a[href]',
+    '.rst__name a[href]',
+    'h3 a[href]',
+    'a[href*="/A"][href*="/A"][href*="/1"]',
     '.rstname a[href]',
     'a[href*="/rstLst/"][href*="/dtl"]'
   ].join(', '));
   primary.forEach(a => {
     const rawHref = a.getAttribute('href') || '';
     const href = resolveUrl(rawHref, baseUrl).split('?')[0];
-    if (RST_URL_RE.test(href)) addUniqueLink(links, href);
+    if (isTabelogRestaurantUrl(href)) addUniqueLink(links, href);
   });
   if (links.length === 0) {
     doc.querySelectorAll('a[href]').forEach(a => {
       const rawHref = a.getAttribute('href') || '';
       const href = resolveUrl(rawHref, baseUrl).split('?')[0];
-      if (RST_URL_RE.test(href)) addUniqueLink(links, href);
+      if (isTabelogRestaurantUrl(href)) addUniqueLink(links, href);
     });
   }
   return links;
@@ -492,8 +513,9 @@ async function fetchAndParseDetail(link, siteType, context = {}, timeoutMs = 100
     let name = '', genre = '', address = '', phone = '', hasWebsite = '無', rawHours = '';
 
     if (siteType === 'tabelog') {
-      name = doc.querySelector('.display-name')?.textContent?.trim() || doc.title.split('|')[0].trim();
-      address = doc.querySelector('p.rstinfo-table__address')?.textContent?.trim() || '';
+      name = doc.querySelector('.display-name, h1.display-name, h2.display-name, [property="v:itemreviewed"], h1')?.textContent?.trim()
+        || doc.title.split('|')[0].trim();
+      address = doc.querySelector('p.rstinfo-table__address, .rstinfo-table__address, [rel="v:addr"], [property="v:address"]')?.textContent?.trim() || '';
 
       let tHours = '';
       let tClosed = '';
@@ -1061,7 +1083,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, error: 'このタブで既に実行中です' });
       return;
     }
-    runPopularGenreCrawl(tabId, message.listUrl, message.maxItems || Infinity);
+    runPopularGenreCrawl(tabId, message.listUrl, message.maxItems || Infinity, {
+      tabelogConcurrency: message.tabelogConcurrency,
+      tabelogDelay: message.tabelogDelay,
+      hotpepperConcurrency: message.hotpepperConcurrency,
+      hotpepperDelay: message.hotpepperDelay,
+      maxRetries: message.maxRetries,
+      fetchTimeout: message.fetchTimeout
+    });
     sendResponse({ ok: true });
     return;
   }
@@ -1106,25 +1135,26 @@ async function extractGenreLinks(listUrl, siteType, tabId) {
     const links = [];
 
     if (siteType === 'tabelog') {
-      const scroll = doc.getElementById('js-leftnavi-genre-scroll');
-      if (scroll) {
-        scroll.querySelectorAll('.list-balloon__btn-list a[href]').forEach(a => {
+      const collectTabelogGenreLinks = (selector) => {
+        doc.querySelectorAll(selector).forEach(a => {
           const href = resolveUrl(a.getAttribute('href') || '', listUrl).split('?')[0].split('#')[0];
           const name = a.textContent.trim().replace(/\s+/g, ' ');
           if (href && name && /tabelog\.com/.test(href) && !links.some(l => l.url === href)) {
             links.push({ name, url: href });
           }
         });
-      }
-      if (links.length === 0) {
-        doc.querySelectorAll('.list-balloon__btn-list a[href]').forEach(a => {
-          const href = resolveUrl(a.getAttribute('href') || '', listUrl).split('?')[0].split('#')[0];
-          const name = a.textContent.trim().replace(/\s+/g, ' ');
-          if (href && name && /tabelog\.com/.test(href) && !links.some(l => l.url === href)) {
-            links.push({ name, url: href });
-          }
-        });
-      }
+      };
+
+      [
+        '#js-leftnavi-genre-scroll .list-balloon__btn-list a[href]',
+        '.list-balloon__btn-list a[href]'
+      ].forEach(collectTabelogGenreLinks);
+
+      if (links.length === 0) [
+        '.list-sidebar__item-target a[href]',
+        '.list-sidebar a[href*="/rstLst/"]',
+        'a[href*="/rstLst/"]'
+      ].forEach(collectTabelogGenreLinks);
 
     } else if (siteType === 'hotpepper') {
       doc.querySelectorAll('.reselectionList li a[href]').forEach(a => {
@@ -1233,7 +1263,7 @@ async function runPopularGenreCrawl(tabId, listUrl, maxItemsPerGenre, speedConfi
       if (finishedTask?.results?.length) {
         const taggedResults = finishedTask.results.map(r => ({
           ...r,
-          source_genre: name
+          sourceGenre: name
         }));
         allResults.push(...taggedResults);
       }

@@ -49,6 +49,81 @@ function waitUntilPanelChanged(previousName, previousUrl, timeoutMs = 4000) {
   });
 }
 
+function getCurrentPanelName() {
+  return (document.querySelector('[role="main"] h1')?.textContent?.trim()) || '';
+}
+
+function getCurrentPanelAddress() {
+  const addrBtn = document.querySelector('button[data-item-id="address"]');
+  if (!addrBtn) return '';
+  const raw = addrBtn.getAttribute('aria-label') || addrBtn.textContent.trim();
+  return raw.replace(/^住所[：:]\s*/, '').trim();
+}
+
+function normalizePlaceName(name) {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/[（）()[\]【】「」『』"'`´｀]/g, '')
+    .replace(/\s+/g, '')
+    .trim();
+}
+
+function isLikelySamePlaceName(a, b) {
+  const aa = normalizePlaceName(a);
+  const bb = normalizePlaceName(b);
+  if (!aa || !bb) return false;
+  return aa === bb || aa.includes(bb) || bb.includes(aa);
+}
+
+async function waitForPanelFieldsReady(options = {}, timeoutMs = 5500) {
+  const {
+    expectedName = '',
+    expectedUrl = '',
+    previousName = '',
+    previousUrl = '',
+    previousAddress = ''
+  } = options;
+  const expectedNames = [expectedName, extractNameFromUrl(expectedUrl)].filter(Boolean);
+  const deadline = Date.now() + timeoutMs;
+  let identityReadyAt = 0;
+  let lastAddress = '';
+  let addressStableAt = 0;
+
+  while (Date.now() < deadline) {
+    const currentName = getCurrentPanelName();
+    const currentUrl = window.location.href;
+    const currentAddress = getCurrentPanelAddress();
+    const usableName = currentName && currentName !== '結果';
+    const identityChanged =
+      (usableName && currentName !== previousName) ||
+      (currentUrl !== previousUrl && currentUrl.includes('/maps/place/'));
+    const nameMatches =
+      expectedNames.length === 0 ||
+      expectedNames.some(name => isLikelySamePlaceName(currentName, name));
+
+    if (identityChanged && nameMatches) {
+      if (!identityReadyAt) identityReadyAt = Date.now();
+
+      if (currentAddress) {
+        if (currentAddress !== lastAddress) {
+          lastAddress = currentAddress;
+          addressStableAt = Date.now();
+        }
+        const addressChanged = !previousAddress || currentAddress !== previousAddress;
+        const addressStable = Date.now() - addressStableAt >= 240;
+        const waitedLongEnoughForSameAddress = Date.now() - identityReadyAt >= 1400;
+        if (addressStable && (addressChanged || waitedLongEnoughForSameAddress)) return true;
+      } else if (Date.now() - identityReadyAt >= 1200) {
+        return true;
+      }
+    }
+
+    await sleep(100);
+  }
+
+  return false;
+}
+
 // スクロール後に一覧カード数が増えるまで待つ
 function waitUntilResultCardsChanged(previousCount, container, timeoutMs = 2000) {
   return new Promise(resolve => {
@@ -1091,6 +1166,9 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
 
         // --- 2. クリック（詳細パネルを閉じない方式）---
         const clickStartedAt = performance.now();
+        const previousPanelName = prevPanelName || getCurrentPanelName();
+        const previousPanelUrl = prevPanelUrl || window.location.href;
+        const previousPanelAddress = getCurrentPanelAddress();
 
         // 詳細パネルが既に開いている場合、パネルを閉じずに次カードをクリック
         if (isDetailPanelOpen()) {
@@ -1099,10 +1177,18 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
 
           // パネル内容の切り替わりを確認（前店舗名/URLと異なることを確認）
           const panelWaitStarted = performance.now();
-          const changed = await waitUntilPanelChanged(prevPanelName, prevPanelUrl, 4000);
-          addTiming(speedStats, 'panelWait', performance.now() - panelWaitStarted);
+          const changed = await waitUntilPanelChanged(previousPanelName, previousPanelUrl, 4000);
+          const fieldWaitStarted = performance.now();
+          const fieldsReady = await waitForPanelFieldsReady({
+            expectedName: cardName,
+            expectedUrl: url,
+            previousName: previousPanelName,
+            previousUrl: previousPanelUrl,
+            previousAddress: previousPanelAddress
+          }, 5500);
+          addTiming(speedStats, 'panelWait', performance.now() - fieldWaitStarted);
 
-          if (changed.name === prevPanelName && changed.url === prevPanelUrl) {
+          if ((changed.name === previousPanelName && changed.url === previousPanelUrl) || !fieldsReady) {
             // 切り替わらなかった: フォールバックで閉じてから開く
             reportV3Log(`パネル切り替わらず フォールバック: ${cardName || url}`);
             const backMs0 = performance.now();
@@ -1112,8 +1198,15 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
             cardLink.click();
             const panelWaitFallback = performance.now();
             const fallbackReady = await waitForDetailPanel(4000);
+            const fallbackFieldsReady = fallbackReady && await waitForPanelFieldsReady({
+              expectedName: cardName,
+              expectedUrl: url,
+              previousName: previousPanelName,
+              previousUrl: previousPanelUrl,
+              previousAddress: previousPanelAddress
+            }, 5500);
             addTiming(speedStats, 'panelWait', performance.now() - panelWaitFallback);
-            if (!fallbackReady) {
+            if (!fallbackReady || !fallbackFieldsReady) {
               speedStats.failed++;
               queuedOrProcessingUrls.delete(url);
               logSkip(item, '詳細取得失敗(フォールバック)', cardName || url);
@@ -1134,6 +1227,23 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
             await closeDetailPanel();
             queuedOrProcessingUrls.delete(url);
             logSkip(item, '詳細取得失敗(パネル未表示)', cardName || url);
+            continue;
+          }
+
+          const fieldWaitStarted = performance.now();
+          const fieldsReady = await waitForPanelFieldsReady({
+            expectedName: cardName,
+            expectedUrl: url,
+            previousName: previousPanelName,
+            previousUrl: previousPanelUrl,
+            previousAddress: previousPanelAddress
+          }, 5500);
+          addTiming(speedStats, 'panelWait', performance.now() - fieldWaitStarted);
+          if (!fieldsReady) {
+            speedStats.failed++;
+            await closeDetailPanel();
+            queuedOrProcessingUrls.delete(url);
+            logSkip(item, '詳細取得失敗(詳細欄未更新)', cardName || url);
             continue;
           }
         }
