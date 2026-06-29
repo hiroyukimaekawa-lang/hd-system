@@ -144,6 +144,11 @@ function sanitizeFilename(str) {
     .slice(0, 50);
 }
 
+async function downloadCsvFile(data, filename) {
+  const encodedUri = 'data:text/csv;charset=utf-8,' + encodeURIComponent(buildCsvContent(data));
+  await chrome.downloads.download({ url: encodedUri, filename, saveAs: false });
+}
+
 function safeTabSendMessage(tabId, message) {
   try {
     chrome.tabs.sendMessage(tabId, message, () => {
@@ -171,10 +176,7 @@ async function handleAutomaticDownload(tabId, data, filterConfig) {
   const targetGenres = stored.targetGenres || '';
 
   const filename = buildFilename(query, filterConfig, targetGenres);
-  const encodedUri =
-    'data:text/csv;charset=utf-8,' + encodeURIComponent(buildCsvContent(data));
-
-  await chrome.downloads.download({ url: encodedUri, filename, saveAs: false });
+  await downloadCsvFile(data, filename);
 }
 
 // =====================================================================
@@ -290,33 +292,47 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         const sanitize = s => String(s || '').replace(/[\\/:*?"<>|]/g,'').replace(/\s+/g,'_').slice(0,50);
         const filename = `${sanitize(city)}_${sanitize(genresStr)}_${dateStr}.csv`;
 
-        const esc = v => `"${String(v ?? '').replace(/"/g,'""')}"`;
-        const OUTPUT_HEADERS = [
-          '店名', 'ジャンル', '取得元ジャンル', '都道府県', '市区町村', '住所', '電話番号',
-          '定休日', '営業日', '営業開始A', '営業終了A', '営業開始B', '営業終了B',
-          '営業時間原文', 'URL', 'HP有無', '媒体', '取得元URL', '取得日時'
-        ];
-        let csv = '\uFEFF' + OUTPUT_HEADERS.join(',') + '\n';
-        for (const it of data) {
-          csv += [
-            esc(it.name), esc(it.genre), esc(it.sourceGenre), esc(it.prefecture), esc(it.city),
-            esc(it.address), esc(it.phone), esc(it.regularHoliday), esc(it.businessDays),
-            esc(it.openTimeA), esc(it.closeTimeA), esc(it.openTimeB), esc(it.closeTimeB),
-            esc(it.rawHours), esc(it.url), esc(it.hasWebsite || '無'), esc(it.source || 'GoogleMap'),
-            esc(it.sourceUrl), esc(it.scrapedAt)
-          ].join(',') + '\n';
-        }
-
-        const encodedUri = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
-
         try {
-          await chrome.downloads.download({ url: encodedUri, filename, saveAs: false });
+          await downloadCsvFile(data, filename);
           sendResponse({ ok: true, filename });
         } catch (e) {
           console.error('[BG] V3 download failed:', e);
           sendResponse({ ok: false, error: e.message });
         }
       });
+    })();
+    return true;
+  }
+
+  if (request.action === 'triggerV3GenreDownload') {
+    (async () => {
+      const data = Array.isArray(request.data) ? request.data : [];
+      if (data.length === 0) {
+        sendResponse({ ok: true, reason: 'no data' });
+        return;
+      }
+
+      const downloadId = request.downloadId || `genre_${Date.now()}`;
+      if (downloadedRunIds.has(downloadId)) {
+        sendResponse({ ok: true, duplicate: true });
+        return;
+      }
+      downloadedRunIds.add(downloadId);
+
+      const d = new Date();
+      const z = n => String(n).padStart(2,'0');
+      const dateStr = `${d.getFullYear()}${z(d.getMonth()+1)}${z(d.getDate())}_${z(d.getHours())}${z(d.getMinutes())}`;
+      const area = request.area || data[0]?.area || data[0]?.city || data[0]?.prefecture || 'GoogleMap';
+      const genre = request.genre || data[0]?.sourceGenre || 'ジャンル';
+      const filename = `${sanitizeFilename(area)}_${sanitizeFilename(genre)}_GoogleMap_${dateStr}.csv`;
+
+      try {
+        await downloadCsvFile(data, filename);
+        sendResponse({ ok: true, filename });
+      } catch (e) {
+        console.error('[BG] V3 genre download failed:', e);
+        sendResponse({ ok: false, error: e.message });
+      }
     })();
     return true;
   }

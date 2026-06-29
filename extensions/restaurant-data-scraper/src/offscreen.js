@@ -24,6 +24,15 @@ function parseAddress(address) {
   return { prefecture: m[1] || '', city: m[2] || '' };
 }
 
+function inferAreaFromResults(results) {
+  const first = Array.isArray(results) ? results.find(Boolean) : null;
+  if (!first) return '';
+  if (first.city) return first.city;
+  if (first.prefecture) return first.prefecture;
+  const parsed = parseAddress(first.address || '');
+  return parsed.city || parsed.prefecture || '';
+}
+
 // 【新規】セルのテキストを改行タグ(br)を保持して取得
 function _extractCellLines(node) {
   if (!node) return '';
@@ -1315,6 +1324,24 @@ async function runPopularGenreCrawl(tabId, listUrl, maxItemsPerGenre, speedConfi
           sourceGenre: name
         }));
         allResults.push(...taggedResults);
+
+        const genreMetadata = {
+          media: siteType,
+          area: finishedTask.metadata?.area || inferAreaFromResults(taggedResults),
+          industry: name
+        };
+
+        chrome.runtime.sendMessage({
+          target: 'background',
+          type: 'DOWNLOAD_CSV',
+          results: taggedResults,
+          metadata: genreMetadata,
+          tabId
+        });
+
+        sendToBackground(tabId, 'INFO', {
+          message: `⬇ [ジャンル ${i + 1}/${genreLinks.length}]「${name}」CSVを出力しました (${taggedResults.length}件)`
+        });
       }
       if (finishedTask && parentTask) {
         parentTask.stats.successCount += finishedTask.stats.successCount || 0;

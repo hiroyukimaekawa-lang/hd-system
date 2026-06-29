@@ -393,10 +393,22 @@ async function v3Drive() {
 
       await v3Set({ [V3K.areaIdx]: areaIdx, [V3K.genreIdx]: genreIdx });
       const t0 = Date.now();
-      await runCombo(area, genre);
+      const comboResult = await runCombo(area, genre);
       const dt = (Date.now() - t0) / 1000;
       durations.push(dt);
       await v3Set({ [V3K.comboDurations]: durations });
+
+      if (comboResult?.items?.length) {
+        const downloadId = `${runId || 'v3'}_${areaIdx}_${genreIdx}_${area}_${genre}`;
+        chrome.runtime.sendMessage({
+          action: 'triggerV3GenreDownload',
+          downloadId,
+          area,
+          genre,
+          data: comboResult.items
+        }).catch(() => { });
+        await v3Log(`⬇ ${area} ${genre} CSVを出力しました (${comboResult.items.length}件)`);
+      }
 
       genreIdx++;
     }
