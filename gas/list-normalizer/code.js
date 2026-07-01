@@ -97,9 +97,16 @@ function importCSVFiles() {
 
   if (combinedData.length > 1) {
     targetSheet.clear();
-    const range = targetSheet.getRange(1, 1, combinedData.length, combinedData[0].length);
+    const colCount = combinedData[0].length;
+    const normalizedData = combinedData.map(row => {
+      if (row.length === colCount) return row;
+      const padded = row.slice(0, colCount);
+      while (padded.length < colCount) padded.push("");
+      return padded;
+    });
+    const range = targetSheet.getRange(1, 1, normalizedData.length, colCount);
     range.setNumberFormat("@");
-    range.setValues(combinedData);
+    range.setValues(normalizedData);
   }
 }
 

@@ -43,23 +43,6 @@ const throttlingIndicator = document.getElementById('throttlingIndicator');
 const activeParams = document.getElementById('activeParams');
 const currentConcurrency = document.getElementById('currentConcurrency');
 const currentDelay = document.getElementById('currentDelay');
-const speedMode = document.getElementById('speedMode');
-
-const SPEED_PRESETS = {
-  safe:     { tabelogConcurrency: 2, tabelogDelay: 2000, maxRetries: 1, fetchTimeout: 20 },
-  standard: { tabelogConcurrency: 3, tabelogDelay: 1000, maxRetries: 1, fetchTimeout: 15 },
-  fast:     { tabelogConcurrency: 4, tabelogDelay: 700,  maxRetries: 0, fetchTimeout: 10 }
-};
-
-function applySpeedMode(mode) {
-  const preset = SPEED_PRESETS[mode];
-  if (!preset) return;
-  tabelogConcurrency.value = preset.tabelogConcurrency;
-  tabelogDelay.value = preset.tabelogDelay;
-  maxRetries.value = preset.maxRetries;
-  fetchTimeout.value = preset.fetchTimeout;
-  validateInputs();
-}
 
 const HD_POPULAR_GENRES = [
   'カフェ', '居酒屋', 'スナック', 'Bar', 'パン屋', '焼き鳥', '喫茶店',
@@ -75,13 +58,13 @@ const DEFAULT_POPULAR_GENRES = [
 
 // 設定のバリデーションと保存
 function validateInputs() {
-  let tc = parseInt(tabelogConcurrency.value) || 3;
+  let tc = parseInt(tabelogConcurrency.value) || 2;
   if (tc < 1) tc = 1;
-  if (tc > 5) tc = 5;
+  if (tc > 3) tc = 3;
   tabelogConcurrency.value = tc;
 
-  let td = parseInt(tabelogDelay.value) || 1000;
-  if (td < 500) td = 500;
+  let td = parseInt(tabelogDelay.value) || 2000;
+  if (td < 1000) td = 1000;
   if (td > 10000) td = 10000;
   tabelogDelay.value = td;
 
@@ -121,21 +104,13 @@ function saveSettings() {
     maxRetries: parseInt(maxRetries.value),
     fetchTimeout: parseInt(fetchTimeout.value),
     maxPages: parseInt(maxPages.value),
-    selectedPopularGenres: getSelectedPopularGenres(),
-    speedMode: speedMode?.value || ''
+    selectedPopularGenres: getSelectedPopularGenres()
   });
 }
 
 [tabelogConcurrency, tabelogDelay, hotpepperConcurrency, hotpepperDelay, maxRetries, fetchTimeout, maxPages].forEach(el => {
   el.addEventListener('change', saveSettings);
 });
-
-if (speedMode) {
-  speedMode.addEventListener('change', () => {
-    applySpeedMode(speedMode.value);
-    saveSettings();
-  });
-}
 
 function renderPopularGenreChoices(selected = DEFAULT_POPULAR_GENRES) {
   if (!popularGenreChoices) return;
@@ -165,7 +140,7 @@ function getSelectedPopularGenres() {
 function loadSettings() {
   chrome.storage.local.get([
     'tabelogConcurrency', 'tabelogDelay', 'hotpepperConcurrency', 'hotpepperDelay',
-    'maxRetries', 'fetchTimeout', 'maxPages', 'selectedPopularGenres', 'speedMode'
+    'maxRetries', 'fetchTimeout', 'maxPages', 'selectedPopularGenres'
   ], (res) => {
     if (res.tabelogConcurrency != null) tabelogConcurrency.value = res.tabelogConcurrency;
     if (res.tabelogDelay != null) tabelogDelay.value = res.tabelogDelay;
@@ -174,7 +149,6 @@ function loadSettings() {
     if (res.maxRetries != null) maxRetries.value = res.maxRetries;
     if (res.fetchTimeout != null) fetchTimeout.value = res.fetchTimeout;
     if (res.maxPages != null) maxPages.value = res.maxPages;
-    if (speedMode && res.speedMode != null) speedMode.value = res.speedMode;
     renderPopularGenreChoices(Array.isArray(res.selectedPopularGenres) ? res.selectedPopularGenres : DEFAULT_POPULAR_GENRES);
     validateInputs();
   });
@@ -288,11 +262,11 @@ function renderPreview(data) {
     el.className = 'preview-item';
 
     let hoursPreview = '';
-    if (r.businessDays || r.openTimeA || r.closeTimeA) {
-      hoursPreview += `<div class="pi-hours" style="font-size: 10px; color: var(--muted); margin-top: 3px;">🕒 営業: ${esc(r.businessDays)} ${esc(r.openTimeA)}〜${esc(r.closeTimeA)}</div>`;
+    if (r.business_days || r.open_time || r.close_time) {
+      hoursPreview += `<div class="pi-hours" style="font-size: 10px; color: var(--muted); margin-top: 3px;">🕒 営業: ${esc(r.business_days)} ${esc(r.open_time)}〜${esc(r.close_time)}</div>`;
     }
-    if (r.regularHoliday) {
-      hoursPreview += `<div class="pi-closed" style="font-size: 10px; color: var(--red); margin-top: 1px;">📅 定休日: ${esc(r.regularHoliday)}</div>`;
+    if (r.regular_holiday) {
+      hoursPreview += `<div class="pi-closed" style="font-size: 10px; color: var(--red); margin-top: 1px;">📅 定休日: ${esc(r.regular_holiday)}</div>`;
     }
 
     el.innerHTML = `
