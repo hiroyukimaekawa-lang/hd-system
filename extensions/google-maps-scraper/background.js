@@ -3,12 +3,13 @@
 const downloadedRunIds = new Set();
 
 // =====================================================================
-// CSVヘッダー定義 (共通スキーマ19項目)
+// CSVヘッダー定義 (共通スキーマ + デバッグ項目)
 // =====================================================================
 const CSV_HEADERS = [
-  '店名', 'ジャンル', '取得元ジャンル', '都道府県', '市区町村', '住所', '電話番号',
+  '店名', 'ジャンル', '検索ジャンル', '取得元ジャンル', '都道府県', '市区町村', '住所', '電話番号',
   '定休日', '営業日', '営業開始A', '営業終了A', '営業開始B', '営業終了B',
-  '営業時間原文', 'URL', 'HP有無', '媒体', '取得元URL', '取得日時'
+  '営業時間原文', 'URL', 'HP有無', '媒体', '取得元URL', '取得日時',
+  '取得ステータス', '除外理由', '詳細取得リトライ回数', '一覧取得順'
 ];
 
 function normalizeExportRecord(item) {
@@ -32,9 +33,12 @@ function normalizeExportRecord(item) {
     source: item.source || 'GoogleMap',
     sourceUrl: item.sourceUrl || '',
     scrapedAt: item.scrapedAt || '',
-    // 内部管理用（CSV には出力しないがレコードとして保持）
     searchGenre: item.searchGenre || '',
     searchKey: item.searchKey || '',
+    acquisitionStatus: item.acquisitionStatus || '取得成功',
+    excludeReason: item.excludeReason || '',
+    detailRetryCount: item.detailRetryCount ?? '',
+    listRank: item.listRank ?? ''
   };
 }
 
@@ -49,6 +53,7 @@ function buildCsvContent(data) {
     csv += [
       escapeCsvValue(r.name),
       escapeCsvValue(r.genre),
+      escapeCsvValue(r.searchGenre),
       escapeCsvValue(r.sourceGenre),
       escapeCsvValue(r.prefecture),
       escapeCsvValue(r.city),
@@ -65,7 +70,11 @@ function buildCsvContent(data) {
       escapeCsvValue(r.hasWebsite),
       escapeCsvValue(r.source),
       escapeCsvValue(r.sourceUrl),
-      escapeCsvValue(r.scrapedAt)
+      escapeCsvValue(r.scrapedAt),
+      escapeCsvValue(r.acquisitionStatus),
+      escapeCsvValue(r.excludeReason),
+      escapeCsvValue(r.detailRetryCount),
+      escapeCsvValue(r.listRank)
     ].join(',') + '\n';
   });
   return csv;

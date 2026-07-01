@@ -30,11 +30,12 @@ const V3K = {
   maxItems:     'v3_maxItems'
 };
 
-// 出力項目（全19項目の共通スキーマ）
+// 出力項目（共通スキーマ + デバッグ項目）
 const OUTPUT_HEADERS = [
-  '店名', 'ジャンル', '取得元ジャンル', '都道府県', '市区町村', '住所', '電話番号',
+  '店名', 'ジャンル', '検索ジャンル', '取得元ジャンル', '都道府県', '市区町村', '住所', '電話番号',
   '定休日', '営業日', '営業開始A', '営業終了A', '営業開始B', '営業終了B',
-  '営業時間原文', 'URL', 'HP有無', '媒体', '取得元URL', '取得日時'
+  '営業時間原文', 'URL', 'HP有無', '媒体', '取得元URL', '取得日時',
+  '取得ステータス', '除外理由', '詳細取得リトライ回数', '一覧取得順'
 ];
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -341,6 +342,7 @@ document.addEventListener('DOMContentLoaded', () => {
       csv += [
         esc(it.name),
         esc(it.genre),
+        esc(it.searchGenre),
         esc(it.sourceGenre),
         esc(it.prefecture),
         esc(it.city),
@@ -357,7 +359,11 @@ document.addEventListener('DOMContentLoaded', () => {
         esc(it.hasWebsite || '無'),
         esc(it.source || 'GoogleMap'),
         esc(it.sourceUrl),
-        esc(it.scrapedAt)
+        esc(it.scrapedAt),
+        esc(it.acquisitionStatus || '取得成功'),
+        esc(it.excludeReason || ''),
+        esc(it.detailRetryCount ?? ''),
+        esc(it.listRank ?? '')
       ].join(',') + '\n';
     }
     return csv;
@@ -382,9 +388,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const rows = data.map(it => `
       <Row>
         ${[
-           it.name, it.genre, it.sourceGenre, it.prefecture, it.city, it.address, it.phone,
+           it.name, it.genre, it.searchGenre, it.sourceGenre, it.prefecture, it.city, it.address, it.phone,
            it.regularHoliday, it.businessDays, it.openTimeA, it.closeTimeA, it.openTimeB, it.closeTimeB,
-           it.rawHours, it.url, it.hasWebsite || '無', it.source || 'GoogleMap', it.sourceUrl, it.scrapedAt
+           it.rawHours, it.url, it.hasWebsite || '無', it.source || 'GoogleMap', it.sourceUrl, it.scrapedAt,
+           it.acquisitionStatus || '取得成功', it.excludeReason || '', it.detailRetryCount ?? '', it.listRank ?? ''
           ].map(v => `<Cell><Data ss:Type="String">${escXml(v ?? '')}</Data></Cell>`).join('')}
       </Row>`).join('');
       

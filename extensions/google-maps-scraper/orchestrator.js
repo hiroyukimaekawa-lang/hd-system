@@ -369,7 +369,7 @@ async function runCombo(area, genre) {
   }
 
   const maxItemsR = await v3Get([V3K.maxItems]);
-  const maxItems = maxItemsR[V3K.maxItems] || 100;
+  const maxItems = maxItemsR[V3K.maxItems] ?? 100;
 
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
@@ -540,7 +540,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         [V3K.collected]: [],
         [V3K.startTime]: Date.now(),
         [V3K.comboDurations]: [],
-        [V3K.maxItems]: maxItems || 100,
+        [V3K.maxItems]: maxItems ?? 100,
         scrapedData: [],
         v3_runId: runId,
         v3_stopReason: ''
