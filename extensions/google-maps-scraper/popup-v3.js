@@ -27,15 +27,17 @@ const V3K = {
   collected:    'v3_collectedData',
   startTime:    'v3_startTime',
   comboDurations: 'v3_comboDurations',
-  maxItems:     'v3_maxItems'
+  maxItems:     'v3_maxItems',
+  scrapeMode:   'v3_scrapeMode',
+  rangeMode:    'v3_rangeMode'
 };
 
 // 出力項目（共通スキーマ + デバッグ項目）
 const OUTPUT_HEADERS = [
-  '店名', 'ジャンル', '検索ジャンル', '取得元ジャンル', '都道府県', '市区町村', '住所', '電話番号',
+  '店名', 'ジャンル', '検索ジャンル', '取得元ジャンル', '都道府県', '市区町村', '小エリア', '住所', '電話番号',
   '定休日', '営業日', '営業開始A', '営業終了A', '営業開始B', '営業終了B',
   '営業時間原文', 'URL', 'HP有無', '媒体', '取得元URL', '取得日時',
-  '取得ステータス', '除外理由', '詳細取得リトライ回数', '一覧取得順'
+  '取得モード', '取得範囲モード', '取得ステータス', '除外理由', '一覧取得順', '詳細取得リトライ回数'
 ];
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -54,6 +56,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const elGenresSum   = document.getElementById('v3-genres-summary');
   const elMaxRange    = document.getElementById('v3-max-items');
   const elMaxVal      = document.getElementById('v3-max-val');
+  const elScrapeMode  = document.getElementById('v3-scrape-mode');
+  const elRangeMode   = document.getElementById('v3-range-mode');
   const btnStart      = document.getElementById('v3-start');
   const btnStop       = document.getElementById('v3-stop');
   const btnReset      = document.getElementById('v3-reset');
@@ -86,8 +90,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ---- 初期化 ----
   (async () => {
-    const stored = await storageGet([V3K.city, V3K.maxItems]);
+    const stored = await storageGet([V3K.city, V3K.maxItems, V3K.scrapeMode, V3K.rangeMode]);
     if (stored[V3K.city]) elCity.value = stored[V3K.city];
+    if (stored[V3K.scrapeMode]) elScrapeMode.value = stored[V3K.scrapeMode];
+    if (stored[V3K.rangeMode]) elRangeMode.value = stored[V3K.rangeMode];
     if (stored[V3K.maxItems]) {
       elMaxRange.value = stored[V3K.maxItems];
       elMaxVal.textContent = stored[V3K.maxItems];
@@ -257,6 +263,8 @@ document.addEventListener('DOMContentLoaded', () => {
     elMaxVal.textContent = e.target.value;
     storageSet({ [V3K.maxItems]: parseInt(e.target.value, 10) });
   });
+  elScrapeMode.addEventListener('change', e => storageSet({ [V3K.scrapeMode]: e.target.value }));
+  elRangeMode.addEventListener('change', e => storageSet({ [V3K.rangeMode]: e.target.value }));
 
   // ---- 開始 ----
   btnStart.addEventListener('click', async () => {
@@ -278,9 +286,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     const max = parseInt(elMaxRange.value, 10) || 100;
+    const scrapeMode = elScrapeMode.value || 'standard';
+    const rangeMode = elRangeMode.value || 'split';
     const res = await sendMsg({
       action: 'v3_start',
-      city, areas: selAreas, genres, maxItems: max
+      city, areas: selAreas, genres, maxItems: max, scrapeMode, rangeMode
     });
     if (res && res.ok) {
       btnStart.disabled = true;
@@ -346,6 +356,7 @@ document.addEventListener('DOMContentLoaded', () => {
         esc(it.sourceGenre),
         esc(it.prefecture),
         esc(it.city),
+        esc(it.subArea),
         esc(it.address),
         esc(it.phone),
         esc(it.regularHoliday),
@@ -360,10 +371,12 @@ document.addEventListener('DOMContentLoaded', () => {
         esc(it.source || 'GoogleMap'),
         esc(it.sourceUrl),
         esc(it.scrapedAt),
+        esc(it.scrapeMode || ''),
+        esc(it.rangeMode || ''),
         esc(it.acquisitionStatus || '取得成功'),
         esc(it.excludeReason || ''),
-        esc(it.detailRetryCount ?? ''),
-        esc(it.listRank ?? '')
+        esc(it.listRank ?? ''),
+        esc(it.detailRetryCount ?? '')
       ].join(',') + '\n';
     }
     return csv;
@@ -388,10 +401,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const rows = data.map(it => `
       <Row>
         ${[
-           it.name, it.genre, it.searchGenre, it.sourceGenre, it.prefecture, it.city, it.address, it.phone,
+           it.name, it.genre, it.searchGenre, it.sourceGenre, it.prefecture, it.city, it.subArea, it.address, it.phone,
            it.regularHoliday, it.businessDays, it.openTimeA, it.closeTimeA, it.openTimeB, it.closeTimeB,
            it.rawHours, it.url, it.hasWebsite || '無', it.source || 'GoogleMap', it.sourceUrl, it.scrapedAt,
-           it.acquisitionStatus || '取得成功', it.excludeReason || '', it.detailRetryCount ?? '', it.listRank ?? ''
+           it.scrapeMode || '', it.rangeMode || '', it.acquisitionStatus || '取得成功', it.excludeReason || '',
+           it.listRank ?? '', it.detailRetryCount ?? ''
           ].map(v => `<Cell><Data ss:Type="String">${escXml(v ?? '')}</Data></Cell>`).join('')}
       </Row>`).join('');
       

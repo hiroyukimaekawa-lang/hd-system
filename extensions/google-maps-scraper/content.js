@@ -551,6 +551,27 @@ function isCafeRelated(sourceGenre, storeName = '') {
   return cafeKeywords.some(keyword => text.includes(keyword.toLowerCase()));
 }
 
+function scoreCandidateForDetail(item, searchGenre, searchArea, scrapeOptions = {}) {
+  if (scrapeOptions.scrapeMode === 'exhaustive') return 999;
+
+  const text = `${item.name || ''} ${item.listText || ''}`.normalize('NFKC').toLowerCase();
+  const genre = String(searchGenre || '').normalize('NFKC').toLowerCase();
+  const excluded = ['ホテル', 'キャンプ場', '観光案内所', '公園', '駐車場', '神社', '寺', '道の駅', '観光施設', 'レジャー施設'];
+  let score = 0;
+
+  if (genre && text.includes(genre)) score += 50;
+  if ((genre === 'カフェ' || genre === '喫茶店') && isCafeRelated(text, item.name)) score += 40;
+  if (item.name && genre && String(item.name).normalize('NFKC').toLowerCase().includes(genre)) score += 40;
+  if (searchArea) {
+    const target = parseTargetArea(searchArea);
+    const areaHints = [target.city, scrapeOptions.subArea, scrapeOptions.subAreaLabel].filter(Boolean);
+    if (areaHints.some(hint => normalizeAddressText(text).includes(normalizeAddressText(hint)))) score += 10;
+  }
+  if (excluded.some(word => text.includes(word.normalize('NFKC').toLowerCase()))) score -= 100;
+
+  return score;
+}
+
 function normalizePhoneNumber(value) {
   const normalized = String(value || '').normalize('NFKC');
   const match = normalized.match(/0\d{1,4}[-\s]?\d{1,4}[-\s]?\d{3,4}/);
@@ -815,6 +836,7 @@ async function collectAllPlaceUrlsFromResults(options = {}) {
       seen.set(url, {
         url,
         name: link.getAttribute('aria-label') || extractNameFromUrl(url),
+        listText: link.closest('.Nv2PK, [role="article"]')?.textContent || link.textContent || '',
         listRank: seen.size + 1,
         firstSeenIndex: seen.size + 1,
         scrollBatch: i + 1,
@@ -1275,7 +1297,7 @@ function reportV3Log(message) {
 // =====================================================================
 // スクレイピング本体 (v4.0)
 // =====================================================================
-async function startScraping(maxItems, targetGenres = [], searchArea = '', searchGenre = '') {
+async function startScraping(maxItems, targetGenres = [], searchArea = '', searchGenre = '', scrapeOptions = {}) {
   isScrapingActive = true;
   stopRequested = false;
   searchPageUrl = window.location.href;
@@ -1318,10 +1340,10 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
 
   reportV3Log('検索結果URLの全件収集を開始');
   const collectedResult = await collectAllPlaceUrlsFromResults({
-    maxEmptyScrolls: 5,
     scrollDelayMs: 1500,
-    maxScrolls: 200,
-    maxResults: effectiveMaxItems === Number.MAX_SAFE_INTEGER ? 0 : effectiveMaxItems
+    maxScrolls: scrapeOptions.maxScrolls || 200,
+    maxEmptyScrolls: scrapeOptions.maxEmptyScrolls || 5,
+    maxResults: 0
   });
   speedStats.urlCollected = collectedResult.items.length;
   speedStats.scrollEndReason = collectedResult.reason;
@@ -1374,6 +1396,14 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
 
         if ((attemptCounts.get(url) || 0) >= 2) {
           logSkip(item, '詳細取得失敗(2回)', item.name || url);
+          continue;
+        }
+
+        const score = scoreCandidateForDetail(item, effectiveGenre, searchArea, scrapeOptions);
+        item.preDetailScore = score;
+        if (score < (scrapeOptions.minScore ?? 0)) {
+          speedStats.genreExcluded++;
+          logSkip(item, '詳細取得前フィルタ', `${item.name || url} / score:${score}`);
           continue;
         }
 
@@ -1703,6 +1733,7 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
           sourceGenre: detail.googleGenre,
           prefecture: parsedAddr.prefecture,
           city: parsedAddr.city,
+          subArea: scrapeOptions.subAreaLabel || scrapeOptions.subArea || '',
           address: detail.address,
           phone: detail.phone,
           phoneStatus: detail.phoneStatus,
@@ -1721,6 +1752,8 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
           scrapedAt: new Date().toISOString(),
           searchGenre: effectiveGenre,
           searchKey,
+          scrapeMode: scrapeOptions.scrapeModeLabel || scrapeOptions.scrapeMode || '',
+          rangeMode: scrapeOptions.rangeMode || '',
           acquisitionStatus: '取得成功',
           excludeReason: '',
           detailRetryCount: Math.max(0, (attemptCounts.get(url) || 1) - 1),
@@ -1847,8 +1880,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const incomingGenres  = Array.isArray(request.targetGenres) ? request.targetGenres : [];
     const incomingArea    = typeof request.searchArea  === 'string' ? request.searchArea.trim()  : '';
     const incomingGenre   = typeof request.searchGenre === 'string' ? request.searchGenre.trim() : '';
+    const incomingOptions = request.scrapeOptions && typeof request.scrapeOptions === 'object' ? request.scrapeOptions : {};
 
-    startScraping(request.maxItems ?? 50, incomingGenres, incomingArea, incomingGenre).catch(err => {
+    startScraping(request.maxItems ?? 50, incomingGenres, incomingArea, incomingGenre, incomingOptions).catch(err => {
       console.error('[Scraper] 致命的エラー:', err);
       isScrapingActive = false;
       reportState(stopRequested ? 'stopped_by_user' : 'done');

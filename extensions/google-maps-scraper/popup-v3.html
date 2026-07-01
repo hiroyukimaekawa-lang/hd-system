@@ -51,6 +51,22 @@
     <section class="v3-panel">
       <h3>3. 実行</h3>
       <div class="v3-form-row">
+        <label class="v3-label" for="v3-scrape-mode">取得モード</label>
+        <select id="v3-scrape-mode" class="v3-input">
+          <option value="standard" selected>標準</option>
+          <option value="fast">高速</option>
+          <option value="exhaustive">網羅</option>
+        </select>
+      </div>
+      <div class="v3-form-row">
+        <label class="v3-label" for="v3-range-mode">取得範囲</label>
+        <select id="v3-range-mode" class="v3-input">
+          <option value="split" selected>小エリア分割</option>
+          <option value="whole">市区町村全域</option>
+          <option value="manual">手動エリア指定</option>
+        </select>
+      </div>
+      <div class="v3-form-row">
         <label class="v3-label">1コンボ最大件数: <span id="v3-max-val">100</span>件</label>
       </div>
       <input type="range" id="v3-max-items" min="20" max="500" step="10" value="100" class="v3-range">

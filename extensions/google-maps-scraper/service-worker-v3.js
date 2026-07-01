@@ -13,6 +13,43 @@
 // v3 側は別キー名前空間 (v3_*) を使うため衝突しない。
 // ============================================================
 
+self.addEventListener('error', event => {
+  console.error('[service-worker error]', {
+    message: event.message,
+    filename: event.filename,
+    lineno: event.lineno,
+    colno: event.colno,
+    error: event.error && event.error.stack ? event.error.stack : event.error
+  });
+});
+
+self.addEventListener('unhandledrejection', event => {
+  console.error('[service-worker unhandledrejection]', {
+    reason: event.reason && event.reason.stack ? event.reason.stack : event.reason
+  });
+});
+
+if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage?.addListener) {
+  const originalAddOnMessageListener = chrome.runtime.onMessage.addListener.bind(chrome.runtime.onMessage);
+  chrome.runtime.onMessage.addListener = listener => {
+    originalAddOnMessageListener((message, sender, sendResponse) => {
+      try {
+        return listener(message, sender, sendResponse);
+      } catch (error) {
+        console.error('[service-worker onMessage error]', {
+          message,
+          sender,
+          error: error && error.stack ? error.stack : error
+        });
+        try {
+          sendResponse({ ok: false, error: String(error?.message || error) });
+        } catch (_) {}
+        return true;
+      }
+    });
+  };
+}
+
 try {
   // 既存の取得・解析・CSV出力ロジック（変更禁止）をそのままロード
   importScripts('background.js');
