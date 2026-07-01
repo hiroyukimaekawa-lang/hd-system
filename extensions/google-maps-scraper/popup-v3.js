@@ -286,6 +286,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const data = Array.isArray(r[V3K.collected]) ? r[V3K.collected] : [];
     if (!data.length) { alert('取得データがありません'); return; }
     const city = r[V3K.city] || 'GoogleMap';
+
+    if (kind === 'csv') {
+      const res = await sendMsg({ action: 'triggerV3Download', runId: `manual_${Date.now()}` });
+      if (!res || !res.ok) alert('CSV出力に失敗しました');
+      return;
+    }
     
     const uniqueGenres = Array.from(new Set(data.map(it => it.sourceGenre).filter(Boolean)));
     const genresStr = uniqueGenres.length > 0 
@@ -299,13 +305,8 @@ document.addEventListener('DOMContentLoaded', () => {
     
     const fileNameBase = `${sanitize(city)}_${sanitize(genresStr)}_${dateStr}`;
     
-    if (kind === 'csv') {
-      const blob = new Blob(['\uFEFF' + toCsv(data)], { type: 'text/csv;charset=utf-8;' });
-      triggerDl(blob, `${fileNameBase}.csv`);
-    } else {
-      const blob = toXlsxBlob(data);
-      triggerDl(blob, `${fileNameBase}.xlsx`);
-    }
+    const blob = toXlsxBlob(data);
+    triggerDl(blob, `${fileNameBase}.xlsx`);
   }
 
   function toCsv(data) {

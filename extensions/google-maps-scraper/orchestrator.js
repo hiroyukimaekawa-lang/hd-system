@@ -260,7 +260,7 @@ function waitForComboDone(area, genre, tabId, timeoutMs = 1800000) { // 30分
         const fresh = Array.isArray(r.scrapedData) ? r.scrapedData : [];
         const collected = Array.isArray(r[V3K.collected]) ? r[V3K.collected] : [];
 
-        const enriched = fresh.map(it => ({ ...it, sourceGenre: genre, area }));
+        const enriched = fresh.map(it => ({ ...it, searchGenre: it.searchGenre || genre, area }));
         const merged = collected.concat(enriched);
         await v3Set({ [V3K.collected]: merged });
         const statusLabel = changes.scrapingState.newValue === 'stopped_by_user' ? 'ユーザー停止' : '完了';
@@ -374,9 +374,6 @@ async function v3Drive() {
       const cur = await v3Get([V3K.state]);
       if (cur[V3K.state] !== 'running') {
         await v3Log('停止しました');
-        if (runId) {
-          chrome.runtime.sendMessage({ action: 'triggerV3Download', runId });
-        }
         return;
       }
 
@@ -415,9 +412,6 @@ async function v3Drive() {
 
     await v3Set({ [V3K.state]: 'done' });
     await v3Log(`🎉 全エリア × 全ジャンル 取得完了`);
-    if (runId) {
-      chrome.runtime.sendMessage({ action: 'triggerV3Download', runId });
-    }
     chrome.runtime.sendMessage({ action: 'v3_done' }).catch(() => { });
     await closeOffscreen();
 
