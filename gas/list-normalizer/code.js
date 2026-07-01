@@ -13,15 +13,18 @@ const SERPAPI_KEY = "df3a6435db2e72dfc9431ac13e752eaf5d4bc60e68a50617471bd09a0d7
 // =====================================================================
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
-  ui.createMenu('⚙️ 店舗管理システム')
-    .addItem('🚀 すべての一括処理を実行（CSV取込〜ジャンル分割）', 'executeAllProcesses')
+  ui.createMenu("⚙️ HD店舗管理システム")
+    .addItem("🚀 すべての一括処理を実行", "executeAllProcesses")
     .addSeparator()
-    .addItem('📁 1. GoogleドライブからCSVを一括取り込み', 'importCSVFiles')
-    .addItem('2. 重複判定を実行 (ステップ1)', 'executeDuplicateCheck')
-    .addItem('3. チェーン判定を実行 (ステップ2)', 'executeChainCheck')
-    .addItem('4. 営業リストを生成 (最終ステップ・ここでAPI補完)', 'executeGenerateSalesList')
-    .addSeparator()
-    .addItem('5. 取得漏れ分析・除外理由タブを生成', 'executeGoogleMapLeakAnalysis')
+    .addItem("📁 1. CSVを一括取り込み", "importCSVFiles")
+    .addItem("2. 正規化・基本判定", "executeNormalizeAndValidate")
+    .addItem("3. 重複判定", "executeDuplicateCheck")
+    .addItem("4. チェーン判定", "executeChainCheck")
+    .addItem("5. 施設判定", "executeFacilityCheck")
+    .addItem("6. ワークフロー分類", "executeWorkflowGrouping")
+    .addItem("7. タブ分け", "executeSplitSheets")
+    .addItem("8. 04_SALES_ジャンル別タブ生成", "executeGenerateSalesGenreSheets")
+    .addItem("9. 04_SALES_CSVをDrive出力", "executeExportSalesGenreCsvFiles")
     .addToUi();
 }
 
@@ -36,9 +39,10 @@ function executeAllProcesses() {
   executeFacilityCheck();
   executeWorkflowGrouping();
   executeSplitSheets();
-  executeGenerateComdeskCsv();
+  executeGenerateSalesGenreSheets();
+  executeExportSalesGenreCsvFiles();
   executeProcessLogSummary();
-  SpreadsheetApp.getUi().alert("HDリスト処理が完了しました。営業対象・確認対象・除外対象・コムデスク投入用CSVを確認してください。");
+  SpreadsheetApp.getUi().alert("HDリスト処理が完了しました。04_SALES_ジャンル別タブとCSVを確認してください。");
 }
 
 // =====================================================================
@@ -175,7 +179,8 @@ function executeDuplicateCheck() {
 }
 
 // =====================================================================
-// 処理2: 全列自動探索型・チェーン判定システム
+// 処理2: 業種対応・チェーン判定システム
+// MASTER_CHAIN 列構成: チェーン名 | 除外キーワード | 業種(飲食/美容/共通) | 除外対象 | メモ
 // =====================================================================
 function executeChainCheck() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -189,8 +194,9 @@ function executeChainCheck() {
   for (let i = 1; i < masterValues.length; i++) {
     const chainName = String(masterValues[i][0]).normalize("NFC").trim();
     const keyword   = String(masterValues[i][1]).normalize("NFC").trim();
-    const isValid   = masterValues[i][3];
-    if (isValid && keyword !== "") { chainMaster.push({ chainName: chainName, keyword: keyword }); }
+    const industry  = String(masterValues[i][2]).normalize("NFC").trim() || "共通"; // 業種: 飲食/美容/共通 (空=共通扱い)
+    const isValid   = masterValues[i][3]; // 除外対象
+    if (isValid && keyword !== "") { chainMaster.push({ chainName: chainName, keyword: keyword, industry: industry }); }
   }
 
   const sourceValues = sourceSheet.getDataRange().getValues();
@@ -220,11 +226,14 @@ function executeChainCheck() {
     }
     const storeName = String(row[nameIdx]).normalize("NFC").trim();
     const cleanName = simplifyStoreName(storeName);
+    const storeIndustry = getStoreIndustry(headerRow, row);
     let isChain = false;
     let matchedChainName = "";
     let chainReason = "";
 
     for (const master of chainMaster) {
+      // 業種フィルタ: 共通は全業種に適用、それ以外は店舗業種と一致する行のみ
+      if (master.industry !== "共通" && master.industry !== storeIndustry) continue;
       if (storeName.includes(master.keyword)) {
         isChain = true; matchedChainName = master.chainName;
         chainReason = "マスタ合致: キーワード[" + master.keyword + "]"; break;
@@ -251,6 +260,23 @@ function executeChainCheck() {
   range.setNumberFormat("@");
   range.setValues(finalOutput);
   if (Object.keys(candidateLog).length > 0) { writeToChainCandidateHook(ss, candidateLog); }
+}
+
+// 店舗の業種を判定する（MASTER_CHAIN の業種フィルタに使用）
+function getStoreIndustry(header, row) {
+  // 明示的な業種列があればそれを優先
+  const explicit = getRowValueByHeader(header, row, "業種");
+  if (explicit === "美容" || explicit === "飲食") return explicit;
+
+  // 正規化ジャンルが美容院なら美容
+  const genre = getRowValueByHeader(header, row, "正規化ジャンル") || getRowValueByHeader(header, row, "ジャンル");
+  if (genre === "美容院") return "美容";
+
+  // 媒体名にビューティー系ワードが含まれていれば美容
+  const media = getRowValueByHeader(header, row, "媒体");
+  if (media && (media.includes("ビューティー") || media.includes("BEAUTY") || media.includes("Beauty"))) return "美容";
+
+  return "飲食";
 }
 
 // =====================================================================
@@ -952,6 +978,125 @@ function executeGenerateComdeskCsv() {
   const outputRows = rows.map(row => buildComdeskRow(header, row));
 
   writeRowsToExistingSheet(targetSheet, finalHeader, outputRows);
+}
+
+// =====================================================================
+// 処理8: 01_営業対象 → 04_SALES_ジャンル別タブを生成
+// =====================================================================
+function executeGenerateSalesGenreSheets() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sourceSheet = ss.getSheetByName("01_営業対象");
+
+  if (!sourceSheet) {
+    SpreadsheetApp.getUi().alert("01_営業対象シートがありません。先に一括処理を実行してください。");
+    return;
+  }
+
+  const values = sourceSheet.getDataRange().getValues();
+  if (values.length <= 1) return;
+
+  const header = normalizeHeaderRow(values[0]);
+  const rows = values.slice(1);
+  const finalHeader = getComdeskHeader();
+
+  const genreContainers = {};
+  HD_TARGET_GENRES.forEach(genre => {
+    genreContainers[genre] = [];
+  });
+
+  rows.forEach(row => {
+    if (!isComdeskTargetRow(header, row)) return;
+    const genre = getFinalHdGenre(header, row);
+    if (!genre || !genreContainers[genre]) return;
+    genreContainers[genre].push(buildComdeskRow(header, row));
+  });
+
+  const sheetsToDelete = ss.getSheets().filter(s => s.getName().startsWith("04_SALES_"));
+  sheetsToDelete.forEach(s => {
+    if (ss.getSheets().length > 1) ss.deleteSheet(s);
+  });
+
+  HD_TARGET_GENRES.forEach(genre => {
+    const genreRows = genreContainers[genre];
+    if (!genreRows || genreRows.length === 0) return;
+    ss.toast(`シート「04_SALES_${genre}」を生成中...`, "📊 ジャンル別タブ生成");
+    writeRowsToExistingSheet(getOrCreateSheet(ss, "04_SALES_" + genre), finalHeader, genreRows);
+  });
+}
+
+function getFinalHdGenre(header, row) {
+  const normalizedGenre = getRowValueByHeader(header, row, "正規化ジャンル");
+  const genre = getRowValueByHeader(header, row, "ジャンル");
+  const searchGenre = getRowValueByHeader(header, row, "検索ジャンル");
+  const sourceGenre = getRowValueByHeader(header, row, "取得元ジャンル");
+  const storeName = getRowValueByHeader(header, row, "店名");
+
+  const finalGenre = normalizeSystemGenre(
+    normalizedGenre || genre || searchGenre || sourceGenre,
+    searchGenre,
+    sourceGenre,
+    storeName
+  );
+
+  return HD_TARGET_GENRES.indexOf(finalGenre) !== -1 ? finalGenre : "";
+}
+
+// =====================================================================
+// 処理9: 04_SALES_ジャンル別タブ → 完成版CSVエクスポートフォルダへ保存
+// =====================================================================
+function executeExportSalesGenreCsvFiles() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ssFile = DriveApp.getFileById(ss.getId());
+  const parentFolder = ssFile.getParents().next();
+  const exportFolder = getOrCreateFolder(parentFolder, "完成版CSVエクスポート");
+  const formattedDate = Utilities.formatDate(new Date(), "JST", "yyyyMMdd");
+
+  ss.getSheets().forEach(sheet => {
+    const sheetName = sheet.getName();
+    if (!sheetName.startsWith("04_SALES_")) return;
+
+    const values = sheet.getDataRange().getValues();
+    if (values.length <= 1) return;
+
+    const genre = sheetName.replace("04_SALES_", "");
+    const areaName = detectAreaNameFromComdeskRows(values) || "ダウンロードリスト";
+    const fileName = `【営業リスト】${areaName}_${genre}_${formattedDate}.csv`;
+
+    ss.toast(`CSVファイル「${fileName}」をDriveへ保存中...`, "📂 CSV出力");
+
+    const bom = "\uFEFF";
+    const blob = Utilities.newBlob(bom + convertArrayToCsvText(values), "text/csv", fileName);
+
+    const existingFiles = exportFolder.getFilesByName(fileName);
+    while (existingFiles.hasNext()) {
+      existingFiles.next().setTrashed(true);
+    }
+
+    exportFolder.createFile(blob);
+  });
+}
+
+function detectAreaNameFromComdeskRows(values) {
+  const header = values[0];
+  const prefIdx = header.indexOf("都道府県");
+  const addrIdx = header.indexOf("住所１");
+
+  if (prefIdx === -1 || addrIdx === -1) return "";
+
+  for (let i = 1; i < values.length; i++) {
+    const pref = textValue(values[i][prefIdx]);
+    const addr = textValue(values[i][addrIdx]);
+
+    if (!pref || !addr) continue;
+
+    const cityMatch = addr.match(/^(.+?[市区町村])/);
+    const city = cityMatch ? cityMatch[1] : "";
+
+    if (city) return pref + city;
+    return pref;
+  }
+
+  return "";
 }
 
 function executeProcessLogSummary() {
