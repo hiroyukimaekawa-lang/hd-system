@@ -150,19 +150,40 @@ document.addEventListener('DOMContentLoaded', () => {
     elGenresSum.textContent = `${sel} / ${tot} ジャンル 選択中`;
   }
 
+  function normalizeAreaText(value) {
+    return String(value || '')
+      .normalize('NFKC')
+      .replace(/\s+/g, '')
+      .trim();
+  }
+
+  function displayAreaName(value) {
+    const normalized = normalizeAreaText(value);
+    const match = normalized.match(/^((?:北海道|東京都|大阪府|京都府|.{2,3}県))?((?:.+?郡.+?[町村]|.+?市.+?区|.+?[市区町村]))?/);
+    return match?.[2] || normalized;
+  }
+
+  function clearAreas() {
+    elAreas.className = 'v3-areas-container empty';
+    elAreas.innerHTML = '<div class="v3-empty">エリアを入力して「区を取得」を押すと、取得対象エリアが表示されます。</div>';
+    elAreasActs.style.display = 'none';
+    elAreasSum.textContent = '';
+  }
+
   // ---- 区一覧読み込み ----
   async function loadAreas() {
     const city = elCity.value.trim();
-    if (!city) return;
+    if (!city) {
+      clearAreas();
+      return;
+    }
     await storageSet({ [V3K.city]: city });
     btnLoadAreas.textContent = '取得中...';
     btnLoadAreas.disabled = true;
     try {
       const res = await sendMsg({ action: 'v3_getAreas', city });
       if (!res || !res.ok || !res.areas.length) {
-        elAreas.className = 'v3-areas-container empty';
-        elAreas.innerHTML = `<div class="v3-empty">「${city}」に対応する区マッピングが見つかりません。<br>未選択のまま開始すると「${city}」単体を全ジャンルで検索します。</div>`;
-        elAreasActs.style.display = 'none';
+        renderAreas([displayAreaName(city)]);
         return;
       }
       renderAreas(res.areas);
@@ -208,11 +229,15 @@ document.addEventListener('DOMContentLoaded', () => {
   function updateSummary() {
     const sel = getSelectedAreas().length;
     const tot = elAreas.querySelectorAll('input[type="checkbox"]').length;
-    elAreasSum.textContent = `${sel} / ${tot} 区 選択中`;
+    elAreasSum.textContent = `${sel} / ${tot} エリア 選択中`;
   }
 
   btnLoadAreas.addEventListener('click', loadAreas);
   elCity.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); loadAreas(); } });
+  elCity.addEventListener('input', () => {
+    clearAreas();
+    storageSet({ [V3K.city]: elCity.value.trim(), [V3K.areas]: [] });
+  });
   btnSelAll.addEventListener('click', () => {
     elAreas.querySelectorAll('input[type="checkbox"]').forEach(c => { c.checked = true; c.dispatchEvent(new Event('change')); });
   });
