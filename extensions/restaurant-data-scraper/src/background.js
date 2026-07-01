@@ -102,6 +102,70 @@ function buildFilename(metadata, ext) {
   return `${area}_${industry}_${media}_${ts}.${ext}`.replace(/[\/\\:*?"<>|]/g, '_');
 }
 
+function sanitizeFilenamePart(value) {
+  return String(value || '')
+    .replace(/[\/\\:*?"<>|]/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, 50);
+}
+
+function formatTimestamp(date = new Date()) {
+  const z = n => String(n).padStart(2, '0');
+  return `${date.getFullYear()}${z(date.getMonth() + 1)}${z(date.getDate())}_${z(date.getHours())}${z(date.getMinutes())}`;
+}
+
+function mediaLabel(metadataMedia, recordSource) {
+  if (recordSource === '食べログ' || metadataMedia === 'tabelog') return '食べログ';
+  if (recordSource === 'ホットペッパー' || recordSource === 'ホットペッパーグルメ' || metadataMedia === 'hotpepper') {
+    return 'ホットペッパーグルメ';
+  }
+  return recordSource || '媒体不明';
+}
+
+function splitAreaText(area) {
+  const text = String(area || '').replace(/\s+/g, '').trim();
+  const m = text.match(/^((?:北海道|東京都|大阪府|京都府|.{2,3}県))?((?:.+?郡.+?[町村]|.+?市.+?区|.+?[市区町村]))?/);
+  return {
+    prefecture: m?.[1] || '',
+    city: m?.[2] || text
+  };
+}
+
+function dedupeByUrl(data) {
+  const seen = new Set();
+  return data.filter(item => {
+    const url = item?.url || '';
+    if (!url) return true;
+    if (seen.has(url)) return false;
+    seen.add(url);
+    return true;
+  });
+}
+
+function groupResultsForCsv(results, metadata = {}) {
+  const groups = new Map();
+  const fallbackArea = splitAreaText(metadata.area || '');
+
+  results.forEach(record => {
+    const prefecture = record.prefecture || fallbackArea.prefecture || '';
+    const city = record.city || fallbackArea.city || '';
+    const genre = record.genre || metadata.industry || record.sourceGenre || '飲食店';
+    const media = mediaLabel(metadata.media, record.source);
+    const key = [prefecture, city, genre].join('\u0001');
+
+    if (!groups.has(key)) {
+      groups.set(key, { prefecture, city, genre, media, items: [] });
+    }
+    groups.get(key).items.push(record);
+  });
+
+  return Array.from(groups.values())
+    .map(group => ({ ...group, items: dedupeByUrl(group.items) }))
+    .filter(group => group.items.length > 0);
+}
+
 // 【改修】共通スキーマ(全19項目)に合わせてCSVを生成
 function generateCSV(data) {
   const headers = [
@@ -131,17 +195,40 @@ function generateCSV(data) {
   return '\uFEFF' + headers.join(',') + '\n' + rows.join('\n');
 }
 
-async function triggerDownload(results, metadata) {
+async function triggerDownload(results, metadata, tabId = null) {
   if (!results || results.length === 0) return;
-  const csv = generateCSV(results);
-  const base64 = btoa(unescape(encodeURIComponent(csv)));
-  const dataUrl = 'data:text/csv;charset=utf-8;base64,' + base64;
-  const filename = buildFilename(metadata, 'csv');
-  try {
-    await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
-    console.log('[BG] CSVダウンロード成功:', filename);
-  } catch (err) {
-    console.error('[BG] CSVダウンロード失敗:', err);
+  const timestamp = formatTimestamp();
+  const groups = groupResultsForCsv(results, metadata);
+
+  for (const group of groups) {
+    const csv = generateCSV(group.items);
+    const base64 = btoa(unescape(encodeURIComponent(csv)));
+    const dataUrl = 'data:text/csv;charset=utf-8;base64,' + base64;
+    const mediaPrefix = group.media === '食べログ'
+      ? 'tabelog'
+      : (group.media === 'ホットペッパーグルメ' ? 'hotpepper' : sanitizeFilenamePart(group.media || 'media'));
+    const filename = [
+      mediaPrefix,
+      group.prefecture,
+      group.city,
+      group.genre,
+      timestamp
+    ].map(sanitizeFilenamePart).filter(Boolean).join('_') + '.csv';
+
+    try {
+      await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
+      console.log('[BG] CSVダウンロード成功:', filename);
+      if (tabId != null) {
+        pushLog(tabId, `CSV出力完了：${filename}`, 'good');
+        chrome.runtime.sendMessage({
+          tabId,
+          type: 'INFO',
+          message: `CSV出力完了：${filename}`
+        }).catch(() => { });
+      }
+    } catch (err) {
+      console.error('[BG] CSVダウンロード失敗:', err);
+    }
   }
 }
 
@@ -201,7 +288,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.type === 'DOWNLOAD_CSV') {
-      triggerDownload(message.results, message.metadata);
+      triggerDownload(message.results, message.metadata, message.tabId);
       chrome.storage.local.set({
         [`last_results_${message.tabId}`]: {
           results: message.results, metadata: message.metadata, timestamp: Date.now()

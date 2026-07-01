@@ -9,15 +9,239 @@ const DELAY_LIST_FETCH = 600;
 
 const genreLinksResolvers = new Map();
 
+const TABELOG_GENRE_NORMALIZE_MAP = {
+  'カフェ': 'カフェ',
+  '喫茶店': '喫茶店',
+  '喫茶': '喫茶店',
+  'コーヒー専門店': '喫茶店',
+  '居酒屋': '居酒屋',
+  'スナック': 'スナック',
+  'ラウンジ': 'スナック',
+  'バー': 'Bar',
+  'Bar': 'Bar',
+  'バー・お酒': 'Bar',
+  'ダイニングバー': 'Bar',
+  'ワインバー': 'Bar',
+  'ビアバー': 'Bar',
+  '日本酒バー': 'Bar',
+  '焼酎バー': 'Bar',
+  'パン': 'パン屋',
+  'パン屋': 'パン屋',
+  'ベーカリー': 'パン屋',
+  'サンドイッチ': 'パン屋',
+  '焼き鳥': '焼き鳥',
+  '焼鳥': '焼き鳥',
+  '鳥料理': '焼き鳥',
+  '串焼き': '焼き鳥',
+  '串揚げ': '焼き鳥',
+  '串かつ': '焼き鳥',
+  '串カツ': '焼き鳥',
+  'お好み焼き': 'お好み焼き',
+  'お好み焼': 'お好み焼き',
+  'もんじゃ焼き': 'お好み焼き',
+  'もんじゃ': 'お好み焼き',
+  'たこ焼き': 'お好み焼き',
+  '鉄板焼き': 'お好み焼き',
+  '焼肉': '焼肉',
+  '焼き肉': '焼肉',
+  'ホルモン': '焼肉',
+  'スイーツ': 'スイーツ',
+  'ケーキ': 'スイーツ',
+  '洋菓子': 'スイーツ',
+  '和菓子': 'スイーツ',
+  'デザート': 'スイーツ',
+  'タピオカ': 'スイーツ',
+  '美容院': '美容院',
+  '美容室': '美容院',
+  '中華料理': '中華',
+  '中華': '中華',
+  '餃子': '中華',
+  '台湾料理': '中華',
+  '四川料理': '中華',
+  '飲茶・点心': '中華',
+  '肉まん': '中華',
+  'ハンバーガー': 'ハンバーガー',
+  'バーガー': 'ハンバーガー',
+  'そば': '蕎麦・うどん',
+  '蕎麦': '蕎麦・うどん',
+  'そば（蕎麦）': '蕎麦・うどん',
+  '蕎麦・うどん': '蕎麦・うどん',
+  'うどん': '蕎麦・うどん',
+  '寿司': '寿司',
+  '鮨': '寿司',
+  'すし': '寿司',
+  '回転寿司': '寿司',
+  '和食': '和食',
+  '日本料理': '和食',
+  '海鮮': '和食',
+  '海鮮・魚介': '和食',
+  '魚介料理': '和食',
+  'うなぎ': '和食',
+  '天ぷら': '和食',
+  'しゃぶしゃぶ': '和食',
+  'すき焼き': '和食',
+  '鍋': '和食',
+  'もつ鍋': '和食',
+  'とんかつ': '和食',
+  '沖縄料理': '和食',
+  '割烹・小料理': '和食',
+  '懐石・会席料理': '和食',
+  '洋食': '洋食',
+  'フレンチ': '洋食',
+  'フランス料理': '洋食',
+  'イタリアン': '洋食',
+  'イタリア料理': '洋食',
+  'スペイン料理': '洋食',
+  'ビストロ': '洋食',
+  'ステーキ': '洋食',
+  'ハンバーグ': '洋食',
+  'パスタ': '洋食',
+  'ピザ': '洋食',
+  'カレー': '洋食',
+  '欧風カレー': '洋食',
+  '洋食・欧風料理': '洋食',
+  'ファミレス': '洋食',
+  'ビュッフェ': '洋食',
+  'バイキング': '洋食',
+  'ビュッフェ・バイキング': '洋食',
+  '定食': '定食・食堂',
+  '定食・食堂': '定食・食堂',
+  '定食屋': '定食・食堂',
+  '食堂': '定食・食堂',
+  '大衆食堂': '定食・食堂',
+  '弁当': '弁当',
+  '弁当屋': '弁当',
+  'べんとう': '弁当',
+  '仕出し': '弁当',
+  '韓国料理': '韓国',
+  '韓国': '韓国',
+  'テイクアウト': 'テイクアウト専門店',
+  'テイクアウト専門店': 'テイクアウト専門店',
+  '持ち帰り': 'テイクアウト専門店',
+  'ラーメン': 'ラーメン',
+  '中華そば': 'ラーメン',
+  'つけ麺': 'ラーメン',
+  '油そば': 'ラーメン',
+  'まぜそば': 'ラーメン',
+  '担々麺': 'ラーメン'
+};
+
+const HD_SYSTEM_GENRES = [
+  'カフェ', '居酒屋', 'スナック', 'Bar', 'パン屋', '焼き鳥', '喫茶店',
+  'お好み焼き', '焼肉', 'スイーツ', '美容院', '中華', 'ハンバーガー',
+  '蕎麦・うどん', '寿司', '和食', '洋食', '定食・食堂', '弁当',
+  '韓国', 'テイクアウト専門店', 'ラーメン'
+];
+
+const HD_SYSTEM_GENRE_SET = new Set(HD_SYSTEM_GENRES);
+
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
+}
+
+function normalizeAddressText(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/^日本、?/, '')
+    .replace(/〒?\d{3}-?\d{4}/g, '')
+    .replace(/\s+/g, '')
+    .trim();
+}
+
+function matchesTargetArea(address, targetPrefecture, targetCity) {
+  if (!address) return false;
+
+  const normalizedAddress = normalizeAddressText(address);
+  const normalizedPrefecture = normalizeAddressText(targetPrefecture);
+  const normalizedCity = normalizeAddressText(targetCity);
+
+  if (normalizedPrefecture && !normalizedAddress.includes(normalizedPrefecture)) {
+    return false;
+  }
+
+  if (normalizedCity && !normalizedAddress.includes(normalizedCity)) {
+    return false;
+  }
+
+  return true;
+}
+
+function normalizePhoneNumber(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/[‐‑‒–—―ー−]/g, '-')
+    .replace(/[^\d-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+function splitGenreText(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/\s+/g, ' ')
+    .split(/[、,／/｜|]+/)
+    .map(v => v.trim())
+    .filter(Boolean);
+}
+
+function normalizeTabelogGenre(sourceGenre, searchGenre) {
+  const raw = String(sourceGenre || searchGenre || '').normalize('NFKC').trim();
+
+  if (!raw) return '';
+
+  if (TABELOG_GENRE_NORMALIZE_MAP[raw]) {
+    return TABELOG_GENRE_NORMALIZE_MAP[raw];
+  }
+
+  for (const [keyword, normalizedGenre] of Object.entries(TABELOG_GENRE_NORMALIZE_MAP)) {
+    if (raw.includes(keyword)) {
+      return normalizedGenre;
+    }
+  }
+
+  return searchGenre || raw;
+}
+
+function resolveTabelogGenre(sourceGenre, searchGenre) {
+  const sourceGenres = splitGenreText(sourceGenre);
+  const normalizedSearchGenre = normalizeTabelogGenre(searchGenre, searchGenre);
+
+  if (normalizedSearchGenre) {
+    const matchedSearchGenre = sourceGenres.some(g => normalizeTabelogGenre(g, searchGenre) === normalizedSearchGenre);
+    if (matchedSearchGenre) return normalizedSearchGenre;
+  }
+
+  if (sourceGenres.length > 0) return normalizeTabelogGenre(sourceGenres[0], searchGenre);
+  return normalizedSearchGenre;
+}
+
+function matchesTargetGenre(sourceGenre, finalGenre, searchGenre) {
+  const normalizedSearchGenre = normalizeTabelogGenre(searchGenre, searchGenre);
+  if (!normalizedSearchGenre || normalizedSearchGenre === '人気ジャンル一括') return true;
+  if (finalGenre === normalizedSearchGenre) return true;
+  return splitGenreText(sourceGenre).some(source => {
+    const normalizedSource = normalizeTabelogGenre(source, searchGenre);
+    return normalizedSource === normalizedSearchGenre || normalizeAddressText(source).includes(normalizeAddressText(searchGenre));
+  });
+}
+
+function filterTabelogHdGenreLinks(genreLinks) {
+  const seen = new Set();
+  return genreLinks.filter(link => {
+    const normalizedGenre = normalizeTabelogGenre(link.name, link.name);
+    if (!HD_SYSTEM_GENRE_SET.has(normalizedGenre)) return false;
+    if (seen.has(normalizedGenre)) return false;
+    seen.add(normalizedGenre);
+    link.hdGenre = normalizedGenre;
+    return true;
+  });
 }
 
 // =====================================================================
 // 【新規】住所文字列から都道府県と市区町村を抽出する関数
 // =====================================================================
 function parseAddress(address) {
-  let cleanAddress = address.replace(/(?:〒\d{3}-\d{4}\s*|日本、\s*)/g, '').trim();
+  let cleanAddress = String(address || '').replace(/(?:〒\d{3}-\d{4}\s*|日本、\s*)/g, '').trim();
   const regex = /^((?:北海道|東京都|大阪府|京都府|.{2,3}県))?((?:.+?郡.+?[町村]|.+?市.+?区|.+?[市区町村]))?(.+)?$/;
   const m = cleanAddress.match(regex);
   if (!m) return { prefecture: '', city: '' };
@@ -33,6 +257,14 @@ function inferAreaFromResults(results) {
   return parsed.city || parsed.prefecture || '';
 }
 
+function getTargetArea(metadata = {}) {
+  const parsed = parseAddress(metadata.area || '');
+  return {
+    prefecture: metadata.prefecture || parsed.prefecture || '',
+    city: metadata.city || parsed.city || (metadata.area || '').replace(/駅周辺|エリア|付近/g, '').trim()
+  };
+}
+
 // 【新規】セルのテキストを改行タグ(br)を保持して取得
 function _extractCellLines(node) {
   if (!node) return '';
@@ -46,21 +278,22 @@ function _extractCellLines(node) {
 // =====================================================================
 function selectBestPhoneNumber(rawText) {
   if (!rawText) return '';
+  rawText = String(rawText).normalize('NFKC').replace(/[‐‑‒–—―ー−]/g, '-');
   
   // テキスト内から電話番号のパターン（数字とハイフンの組み合わせ）をすべて抽出
   const matches = rawText.match(/(?:\d{2,5}-\d{1,4}-\d{3,4}|\d{10,11})/g);
   if (!matches || matches.length === 0) {
-    return rawText.replace(/[^\d\-]/g, ''); // マッチしなければ記号除去のみ
+    return normalizePhoneNumber(rawText); // マッチしなければ記号除去のみ
   }
   
   // 050から始まらない番号（実店舗の固定電話や携帯など）を最優先でフィルタリング
   const non050Numbers = matches.filter(num => !num.startsWith('050'));
   if (non050Numbers.length > 0) {
-    return non050Numbers[0].replace(/[^\d\-]/g, ''); // 最初の固定電話などを採用
+    return normalizePhoneNumber(non050Numbers[0]); // 最初の固定電話などを採用
   }
   
   // 050番号しか存在しない場合は、最初の050番号を返す
-  return matches[0].replace(/[^\d\-]/g, '');
+  return normalizePhoneNumber(matches[0]);
 }
 
 function getSiteType(url) {
@@ -601,7 +834,7 @@ async function fetchAndParseDetail(link, siteType, context = {}, timeoutMs = 100
 
       if (!phone) {
         const telAnchor = doc.querySelector('a[href^="tel:"]');
-        if (telAnchor) phone = telAnchor.getAttribute('href').replace('tel:', '').trim().replace(/[^\d\-]/g, '');
+        if (telAnchor) phone = normalizePhoneNumber(telAnchor.getAttribute('href').replace('tel:', '').trim());
       }
 
       const hpLink = doc.querySelector('.homepage a, a.c-link-arrow[href*="rst_site_url"], .rstinfo-table__link');
@@ -713,7 +946,7 @@ async function fetchAndParseDetail(link, siteType, context = {}, timeoutMs = 100
       }
 
       address = address.replace(/地図を見る/g, '').replace(/\s+/g, ' ').replace(/\n/g, '').trim();
-      phone = phone.replace(/[^\d\-]/g, '');
+      phone = normalizePhoneNumber(phone);
       name = name.replace(/\n/g, '').trim();
       genre = genre.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
 
@@ -722,16 +955,7 @@ async function fetchAndParseDetail(link, siteType, context = {}, timeoutMs = 100
       rawHours = rawHours.trim();
     }
 
-    const parsedAddr = parseAddress(address);
-    const searchArea = context.area || '';
-    if (searchArea) {
-      const cleanArea = searchArea.replace(/駅周辺|エリア|付近/g, '').trim();
-      if (/[市区町村]$/.test(cleanArea) && parsedAddr.city && !parsedAddr.city.includes(cleanArea) && !cleanArea.includes(parsedAddr.city)) {
-        return null; 
-      }
-    }
-
-    return { name, genre, address, phone, rawHours, hasWebsite, url: link, source: siteType };
+    return { name, genre, address, phone: normalizePhoneNumber(phone), rawHours, hasWebsite, url: link, source: siteType };
 
   } catch (e) {
     return null;
@@ -915,18 +1139,48 @@ async function runCrawlTask(tabId) {
             }
 
             if (detail && detail.name && task.running) {
+              if (!detail.address) {
+                task.stats.failedCount++;
+                sendToBackground(tabId, 'INFO', { message: `住所未取得: ${detail.name}` });
+                sendProgress();
+                continue;
+              }
+
               const normalized = normalizeBusinessHours(detail.rawHours || '');
               const parsedAddr = parseAddress(detail.address);
+              const targetArea = getTargetArea(task.metadata);
+              if (!matchesTargetArea(detail.address, targetArea.prefecture, targetArea.city)) {
+                task.stats.failedCount++;
+                sendToBackground(tabId, 'INFO', { message: `エリア外除外: ${detail.name} / ${detail.address}` });
+                sendProgress();
+                continue;
+              }
+
+              const sourceGenre = detail.genre || task.metadata.industry || '';
+              const finalGenre = siteType === 'tabelog'
+                ? resolveTabelogGenre(sourceGenre, task.metadata.industry)
+                : (detail.genre || task.metadata.industry || '');
+
+              if (siteType === 'tabelog' && !matchesTargetGenre(sourceGenre, finalGenre, task.metadata.industry)) {
+                task.stats.failedCount++;
+                sendToBackground(tabId, 'INFO', { message: `ジャンル不一致除外: ${detail.name} / ${sourceGenre || 'ジャンル未取得'}` });
+                sendProgress();
+                continue;
+              }
+
+              if (siteType === 'tabelog') {
+                sendToBackground(tabId, 'INFO', { message: `ジャンル変換: ${sourceGenre || '(空)'} → ${finalGenre || '(空)'}` });
+              }
 
               const finalDetail = {
                 name: detail.name,
-                genre: detail.genre,
-                sourceGenre: detail.genre,
+                genre: finalGenre,
+                sourceGenre,
                 prefecture: parsedAddr.prefecture,
                 city: parsedAddr.city,
                 address: detail.address,
-                phone: detail.phone || '',
-                regularHoliday: normalized.holiday || '無休',
+                phone: normalizePhoneNumber(detail.phone),
+                regularHoliday: normalized.holiday || '',
                 businessDays: normalized.businessDays || '',
                 openTimeA: normalized.openTimeA || '',
                 closeTimeA: normalized.closeTimeA || '',
@@ -1276,8 +1530,17 @@ async function runPopularGenreCrawl(tabId, listUrl, maxItemsPerGenre, speedConfi
       return;
     }
 
+    if (siteType === 'tabelog') {
+      genreLinks = filterTabelogHdGenreLinks(genreLinks);
+      if (genreLinks.length === 0) {
+        sendToBackground(tabId, 'ERROR', { message: 'HD投入用ジャンルに対応する食べログジャンルリンクが見つかりませんでした。' });
+        activeTasks.delete(parentTaskKey);
+        return;
+      }
+    }
+
     sendToBackground(tabId, 'INFO', {
-      message: `${genreLinks.length}ジャンルを検出: ${genreLinks.map(g => g.name).join('、')}`
+      message: `${genreLinks.length}ジャンルを検出: ${genreLinks.map(g => g.hdGenre || g.name).join('、')}`
     });
 
     const allResults = [];
@@ -1289,9 +1552,10 @@ async function runPopularGenreCrawl(tabId, listUrl, maxItemsPerGenre, speedConfi
         break;
       }
 
-      const { name, url } = genreLinks[i];
+      const { name, url, hdGenre } = genreLinks[i];
+      const searchGenreName = hdGenre || name;
       sendToBackground(tabId, 'INFO', {
-        message: `🏷️ [ジャンル ${i + 1}/${genreLinks.length}]「${name}」の取得を開始します`
+        message: `🏷️ [ジャンル ${i + 1}/${genreLinks.length}]「${searchGenreName}」の取得を開始します`
       });
 
       const tempId = `${tabId}_pg_${i}`;
@@ -1302,7 +1566,7 @@ async function runPopularGenreCrawl(tabId, listUrl, maxItemsPerGenre, speedConfi
         listUrl: url,
         results: [],
         maxItems: maxItemsPerGenre,
-        metadata: { media: siteType, area: '', industry: name },
+        metadata: { media: siteType, area: '', industry: searchGenreName },
         abortController: subController,
         ...speedConfig,
         stats: {
@@ -1319,16 +1583,13 @@ async function runPopularGenreCrawl(tabId, listUrl, maxItemsPerGenre, speedConfi
 
       const finishedTask = activeTasks.get(tempId);
       if (finishedTask?.results?.length) {
-        const taggedResults = finishedTask.results.map(r => ({
-          ...r,
-          sourceGenre: name
-        }));
+        const taggedResults = finishedTask.results;
         allResults.push(...taggedResults);
 
         const genreMetadata = {
           media: siteType,
           area: finishedTask.metadata?.area || inferAreaFromResults(taggedResults),
-          industry: name
+          industry: searchGenreName
         };
 
         chrome.runtime.sendMessage({
@@ -1340,7 +1601,7 @@ async function runPopularGenreCrawl(tabId, listUrl, maxItemsPerGenre, speedConfi
         });
 
         sendToBackground(tabId, 'INFO', {
-          message: `⬇ [ジャンル ${i + 1}/${genreLinks.length}]「${name}」CSVを出力しました (${taggedResults.length}件)`
+          message: `⬇ [ジャンル ${i + 1}/${genreLinks.length}]「${searchGenreName}」CSVを出力しました (${taggedResults.length}件)`
         });
       }
       if (finishedTask && parentTask) {
@@ -1350,7 +1611,7 @@ async function runPopularGenreCrawl(tabId, listUrl, maxItemsPerGenre, speedConfi
       activeTasks.delete(tempId);
 
       sendToBackground(tabId, 'INFO', {
-        message: `✅ [ジャンル ${i + 1}/${genreLinks.length}]「${name}」完了 → 累計 ${allResults.length} 件`
+        message: `✅ [ジャンル ${i + 1}/${genreLinks.length}]「${searchGenreName}」完了 → 累計 ${allResults.length} 件`
       });
 
       if (i < genreLinks.length - 1) {
@@ -1380,16 +1641,6 @@ async function runPopularGenreCrawl(tabId, listUrl, maxItemsPerGenre, speedConfi
       activeConcurrency: 0,
       activeDelay: 0
     });
-
-    if (cleanResults.length > 0) {
-      chrome.runtime.sendMessage({
-        target: 'background',
-        type: 'DOWNLOAD_CSV',
-        results: cleanResults,
-        metadata: finalMetadata,
-        tabId
-      });
-    }
 
     chrome.runtime.sendMessage({
       target: 'background',

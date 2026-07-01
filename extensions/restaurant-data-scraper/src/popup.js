@@ -250,28 +250,19 @@ function toCSV(data) {
 
 function downloadCSV() {
   if (!allResults.length) return;
-  const csv = toCSV(allResults);
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-
-  const area = metadata.area || '不明';
-  const industry = metadata.industry || '飲食店';
-  const media = metadata.media === 'tabelog'
-    ? '食べログ'
-    : (metadata.media === 'hotpepper' ? 'ホットペッパー' : '媒体不明');
-
-  const now = new Date();
-  const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
-
-  let filename = `${area}_${industry}_${media}_${ts}.csv`;
-  filename = filename.replace(/[\/\\:*?"<>|]/g, '_');
-
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-  addLog(`CSV ダウンロード: ${allResults.length}件`, 'good');
+  chrome.runtime.sendMessage({
+    target: 'background',
+    type: 'DOWNLOAD_CSV',
+    tabId: currentTabId,
+    results: allResults,
+    metadata
+  }, res => {
+    if (res?.ok) {
+      addLog(`CSV出力開始: ${allResults.length}件`, 'good');
+    } else {
+      addLog('CSV出力に失敗しました', 'err');
+    }
+  });
 }
 
 // ============================================================
