@@ -58,12 +58,12 @@ const DEFAULT_POPULAR_GENRES = [
 
 // 設定のバリデーションと保存
 function validateInputs() {
-  let tc = parseInt(tabelogConcurrency.value) || 1;
+  let tc = parseInt(tabelogConcurrency.value) || 2;
   if (tc < 1) tc = 1;
-  if (tc > 2) tc = 2;
+  if (tc > 3) tc = 3;
   tabelogConcurrency.value = tc;
 
-  let td = parseInt(tabelogDelay.value) || 3000;
+  let td = parseInt(tabelogDelay.value) || 2000;
   if (td < 1000) td = 1000;
   if (td > 10000) td = 10000;
   tabelogDelay.value = td;
@@ -447,8 +447,8 @@ startBtn.addEventListener('click', async () => {
     tabId: tab.id,
     listUrl: tab.url,
     maxItems: maxItems,
-    tabelogConcurrency: parseInt(tabelogConcurrency.value) || 1,
-    tabelogDelay: parseInt(tabelogDelay.value) || 3000,
+    tabelogConcurrency: parseInt(tabelogConcurrency.value) || 2,
+    tabelogDelay: parseInt(tabelogDelay.value) || 2000,
     hotpepperConcurrency: parseInt(hotpepperConcurrency.value) || 6,
     hotpepperDelay: parseInt(hotpepperDelay.value) || 500,
     maxRetries: parseInt(maxRetries.value) ?? 1,
@@ -526,8 +526,8 @@ popularGenreBtn.addEventListener('click', async () => {
     tabId: tab.id,
     listUrl: tab.url,
     maxItems: maxItems,
-    tabelogConcurrency: parseInt(tabelogConcurrency.value) || 1,
-    tabelogDelay: parseInt(tabelogDelay.value) || 3000,
+    tabelogConcurrency: parseInt(tabelogConcurrency.value) || 2,
+    tabelogDelay: parseInt(tabelogDelay.value) || 2000,
     hotpepperConcurrency: parseInt(hotpepperConcurrency.value) || 6,
     hotpepperDelay: parseInt(hotpepperDelay.value) || 500,
     maxRetries: parseInt(maxRetries.value) ?? 1,
