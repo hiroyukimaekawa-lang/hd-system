@@ -135,6 +135,64 @@ const HD_SYSTEM_GENRES = [
 
 const HD_SYSTEM_GENRE_SET = new Set(HD_SYSTEM_GENRES);
 
+const DEFAULT_RECOMMENDED_GENRES = [
+  'カフェ', '居酒屋', 'ラーメン', '焼肉', '寿司', '和食',
+  '中華', '韓国', '焼き鳥', 'パン屋', 'スイーツ'
+];
+
+function createStats() {
+  return {
+    successCount: 0,
+    failedCount: 0,
+    retryingCount: 0,
+    blockCount: 0,
+    timeoutCount: 0,
+    noNameCount: 0,
+    noAddressCount: 0,
+    noPhoneCount: 0,
+    htmlMismatchCount: 0,
+    otherFailCount: 0,
+    isThrottling: false,
+    activeConcurrency: 0,
+    activeDelay: 0
+  };
+}
+
+function incrementFailureStat(stats, reason) {
+  if (!stats) return;
+  if (reason === 'アクセス制限') stats.blockCount++;
+  else if (reason === 'タイムアウト') stats.timeoutCount++;
+  else if (reason === '店舗名なし') stats.noNameCount++;
+  else if (reason === 'HTML構造不一致') stats.htmlMismatchCount++;
+  else stats.otherFailCount++;
+  stats.failedCount++;
+}
+
+function recordFailedUrl(task, { pageUrl = '', storeUrl = '', reason = 'その他', httpStatus = '', retries = 0 } = {}) {
+  if (!task) return;
+  if (!Array.isArray(task.failedUrls)) task.failedUrls = [];
+  task.failedUrls.push({
+    scrapedAt: new Date().toISOString(),
+    source: task.metadata?.media === 'tabelog' ? '食べログ' : (task.metadata?.media === 'hotpepper' ? 'ホットペッパー' : ''),
+    genre: task.metadata?.industry || '',
+    pageUrl,
+    storeUrl,
+    reason,
+    httpStatus,
+    retries
+  });
+}
+
+function mergeStats(base, extra) {
+  if (!base || !extra) return;
+  [
+    'successCount', 'failedCount', 'retryingCount', 'blockCount', 'timeoutCount',
+    'noNameCount', 'noAddressCount', 'noPhoneCount', 'htmlMismatchCount', 'otherFailCount'
+  ].forEach(key => {
+    base[key] = (base[key] || 0) + (extra[key] || 0);
+  });
+}
+
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
@@ -749,23 +807,33 @@ function validateWebsiteUrl(url) {
 }
 
 async function fetchAndParseDetail(link, siteType, context = {}, timeoutMs = 10000, signal = null) {
+  let timer = null;
   try {
     const controller = new AbortController();
-    const combinedSignal = signal || controller.signal;
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const abortFromParent = () => controller.abort();
+    if (signal) {
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener('abort', abortFromParent, { once: true });
+    }
+    timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    const res = await fetch(link, { signal: combinedSignal, credentials: 'include' });
+    const res = await fetch(link, { signal: controller.signal, credentials: 'include' });
+    if (signal) signal.removeEventListener('abort', abortFromParent);
     clearTimeout(timer);
 
     if (res.status === 403 || res.status === 429) {
-      return { isBlocked: true, url: link };
+      return { isBlocked: true, httpStatus: res.status, url: link };
+    }
+
+    if (!res.ok) {
+      return { isFetchFailed: true, httpStatus: res.status, url: link };
     }
 
     const html = await res.text();
 
     // 食べログ・ホットペッパー等のWAF（Cloudflare等）ブロック検知
     if (/アクセスが拒否されました|一時的に制限|アクセスが集中|Cloudflare|Robot Check|Security Check/i.test(html)) {
-      return { isBlocked: true, url: link };
+      return { isBlocked: true, httpStatus: res.status, url: link };
     }
 
     const parser = new DOMParser();
@@ -958,7 +1026,11 @@ async function fetchAndParseDetail(link, siteType, context = {}, timeoutMs = 100
     return { name, genre, address, phone: normalizePhoneNumber(phone), rawHours, hasWebsite, url: link, source: siteType };
 
   } catch (e) {
-    return null;
+    if (timer) clearTimeout(timer);
+    if (e.name === 'AbortError') {
+      return { isTimeout: true, url: link };
+    }
+    return { isFetchFailed: true, errorMessage: e.message, url: link };
   }
 }
 
@@ -970,14 +1042,23 @@ async function runCrawlTask(tabId) {
   let collected = 0;
   let pageNum = 1;
   let currentListUrl = task.listUrl;
+  const visitedPageUrls = new Set();
+  const maxPages = Number.isFinite(task.maxPages) ? task.maxPages : 20;
 
   try {
-    while (task.running && collected < task.maxItems) {
+    while (task.running && collected < task.maxItems && pageNum <= maxPages) {
       const siteType = getSiteType(currentListUrl);
       if (!siteType) {
         sendToBackground(tabId, 'ERROR', { message: '対応サイトではありません' });
         break;
       }
+
+      const normalizedPageUrl = normalizeListUrl(currentListUrl);
+      if (visitedPageUrls.has(normalizedPageUrl)) {
+        sendToBackground(tabId, 'INFO', { message: `${task.metadata?.industry ? `["${task.metadata.industry}"] ` : ''}訪問済みページを検知したため終了: ${normalizedPageUrl}` });
+        break;
+      }
+      visitedPageUrls.add(normalizedPageUrl);
 
       const siteName = siteType === 'tabelog' ? '食べログ' : 'ホットペッパー';
       const genreLabel = task.metadata?.industry ? `["${task.metadata.industry}"]` : '';
@@ -986,11 +1067,15 @@ async function runCrawlTask(tabId) {
       await sleep(DELAY_LIST_FETCH);
       const res = await fetch(currentListUrl, { credentials: 'include' });
       if (res.status === 403 || res.status === 429) {
+        incrementFailureStat(task.stats, 'アクセス制限');
+        recordFailedUrl(task, { pageUrl: currentListUrl, reason: String(res.status), httpStatus: res.status, retries: 0 });
         sendToBackground(tabId, 'ERROR', { message: `${genreLabel} 一覧ページでアクセス制限(${res.status})を検知しました。待機時間を長めにして再実行してください。` });
         break;
       }
       const html = await res.text();
       if (/アクセスが拒否されました|一時的に制限|アクセスが集中|Cloudflare|Robot Check|Security Check/i.test(html)) {
+        incrementFailureStat(task.stats, 'アクセス制限');
+        recordFailedUrl(task, { pageUrl: currentListUrl, reason: 'ブロック画面', httpStatus: res.status, retries: 0 });
         sendToBackground(tabId, 'ERROR', { message: `${genreLabel} 一覧ページがブロック画面になっています。待機時間を長めにして再実行してください。` });
         break;
       }
@@ -1052,6 +1137,15 @@ async function runCrawlTask(tabId) {
         let failedCount = task.stats.failedCount;
         let retryingCount = task.stats.retryingCount;
         let collectedCount = currentCollected;
+        const detailCounts = {
+          blockCount: task.stats.blockCount,
+          timeoutCount: task.stats.timeoutCount,
+          noNameCount: task.stats.noNameCount,
+          noAddressCount: task.stats.noAddressCount,
+          noPhoneCount: task.stats.noPhoneCount,
+          htmlMismatchCount: task.stats.htmlMismatchCount,
+          otherFailCount: task.stats.otherFailCount
+        };
 
         if (typeof tabId === 'string' && tabId.includes('_pg_')) {
           const parentKey = targetTabId + '_popular';
@@ -1060,6 +1154,9 @@ async function runCrawlTask(tabId) {
             successCount += parent.stats.successCount;
             failedCount += parent.stats.failedCount;
             collectedCount += parent.results.filter(Boolean).length;
+            Object.keys(detailCounts).forEach(key => {
+              detailCounts[key] += parent.stats[key] || 0;
+            });
           }
         }
 
@@ -1073,7 +1170,8 @@ async function runCrawlTask(tabId) {
           retryingCount: retryingCount,
           isThrottling: task.stats.isThrottling,
           activeConcurrency: task.stats.activeConcurrency,
-          activeDelay: task.stats.activeDelay
+          activeDelay: task.stats.activeDelay,
+          ...detailCounts
         });
       }
 
@@ -1092,7 +1190,7 @@ async function runCrawlTask(tabId) {
           activeCount++;
           task.stats.activeConcurrency = activeCount;
 
-          const delay = task.stats.isThrottling ? 3000 : activeDelay;
+          const delay = task.stats.isThrottling ? Math.max(activeDelay, 7000) : activeDelay;
           if (delay > 0) {
             await sleep(delay);
           }
@@ -1122,11 +1220,21 @@ async function runCrawlTask(tabId) {
                 detail = await fetchAndParseDetail(item.link, siteType, { area: task.metadata.area, listUrl: currentListUrl }, timeoutMs, task.abortController?.signal);
 
                 if (detail && detail.isBlocked) {
-                  throw new Error('BLOCKED');
+                  const err = new Error('BLOCKED');
+                  err.httpStatus = detail.httpStatus || '';
+                  throw err;
+                }
+                if (detail && detail.isTimeout) {
+                  throw new Error('TIMEOUT');
+                }
+                if (detail && detail.isFetchFailed) {
+                  const err = new Error(detail.errorMessage || 'FETCH_FAILED');
+                  err.httpStatus = detail.httpStatus || '';
+                  throw err;
                 }
                 break;
               } catch (err) {
-                if (err.name === 'AbortError') {
+                if (err.name === 'AbortError' || err.message === 'TIMEOUT') {
                   console.warn(`[offscreen] タイムアウト: ${item.link}`);
                 } else {
                   console.warn(`[offscreen] フェッチエラー: ${item.link}`, err.message);
@@ -1140,7 +1248,8 @@ async function runCrawlTask(tabId) {
 
             if (detail && detail.name && task.running) {
               if (!detail.address) {
-                task.stats.failedCount++;
+                task.stats.noAddressCount++;
+                recordFailedUrl(task, { pageUrl: currentListUrl, storeUrl: item.link, reason: '住所取得不可', retries: retries });
                 sendToBackground(tabId, 'INFO', { message: `住所未取得: ${detail.name}` });
                 sendProgress();
                 continue;
@@ -1150,7 +1259,6 @@ async function runCrawlTask(tabId) {
               const parsedAddr = parseAddress(detail.address);
               const targetArea = getTargetArea(task.metadata);
               if (!matchesTargetArea(detail.address, targetArea.prefecture, targetArea.city)) {
-                task.stats.failedCount++;
                 sendToBackground(tabId, 'INFO', { message: `エリア外除外: ${detail.name} / ${detail.address}` });
                 sendProgress();
                 continue;
@@ -1162,7 +1270,8 @@ async function runCrawlTask(tabId) {
                 : (detail.genre || task.metadata.industry || '');
 
               if (siteType === 'tabelog' && !matchesTargetGenre(sourceGenre, finalGenre, task.metadata.industry)) {
-                task.stats.failedCount++;
+                incrementFailureStat(task.stats, 'その他');
+                recordFailedUrl(task, { pageUrl: currentListUrl, storeUrl: item.link, reason: 'ジャンル不一致', retries: retries });
                 sendToBackground(tabId, 'INFO', { message: `ジャンル不一致除外: ${detail.name} / ${sourceGenre || 'ジャンル未取得'}` });
                 sendProgress();
                 continue;
@@ -1194,6 +1303,10 @@ async function runCrawlTask(tabId) {
                 scrapedAt: new Date().toISOString()
               };
 
+              if (!finalDetail.phone) {
+                task.stats.noPhoneCount++;
+              }
+
               task.results[item.originalIndex] = finalDetail;
               task.stats.successCount++;
 
@@ -1205,18 +1318,31 @@ async function runCrawlTask(tabId) {
               collected = task.results.filter(Boolean).length;
               sendProgress(detail.name);
             } else {
-              task.stats.failedCount++;
+              const reason = detail && !detail.name ? '店舗名なし' : 'HTML構造不一致';
+              incrementFailureStat(task.stats, reason);
+              recordFailedUrl(task, { pageUrl: currentListUrl, storeUrl: item.link, reason, retries: retries });
               sendProgress();
             }
 
           } catch (err) {
             console.error(`[offscreen] ${item.link} 最終失敗:`, err.message);
-            task.stats.failedCount++;
+            const reason = err.message === 'BLOCKED' || err.message.includes('403') || err.message.includes('429')
+              ? 'アクセス制限'
+              : (err.name === 'AbortError' || err.message === 'TIMEOUT' ? 'タイムアウト' : 'その他');
+            incrementFailureStat(task.stats, reason);
+            recordFailedUrl(task, {
+              pageUrl: currentListUrl,
+              storeUrl: item.link,
+              reason,
+              httpStatus: err.httpStatus || (err.message.includes('403') ? 403 : (err.message.includes('429') ? 429 : '')),
+              retries: task.maxRetries ?? 2
+            });
 
             if (err.message === 'BLOCKED' || err.message.includes('403') || err.message.includes('429')) {
               if (!task.stats.isThrottling) {
                 task.stats.isThrottling = true;
-                sendToBackground(tabId, 'INFO', { message: '⚠️ アクセス拒否(403/429/ブロック画面)を検知しました。自動減速運転に移行します（並行数1、待機3000ms）' });
+                task.stats.activeDelay = Math.max(activeDelay, 7000);
+                sendToBackground(tabId, 'INFO', { message: '⚠️ アクセス拒否(403/429/ブロック画面)を検知しました。自動減速運転に移行します（並行数1、待機7000ms以上）' });
               }
             }
             sendProgress();
@@ -1241,9 +1367,17 @@ async function runCrawlTask(tabId) {
         sendToBackground(tabId, 'INFO', { message: `${genreLabel} 最終ページに達しました` });
         break;
       }
+      const normalizedNextUrl = normalizeListUrl(nextUrl);
+      if (normalizedNextUrl === normalizedPageUrl || visitedPageUrls.has(normalizedNextUrl)) {
+        sendToBackground(tabId, 'INFO', { message: `${genreLabel} 次ページが重複したため終了: ${normalizedNextUrl}` });
+        break;
+      }
 
       currentListUrl = nextUrl;
       pageNum++;
+    }
+    if (pageNum > maxPages) {
+      sendToBackground(tabId, 'INFO', { message: `${task.metadata?.industry ? `["${task.metadata.industry}"] ` : ''}最大ページ数 ${maxPages} に到達しました` });
     }
   } catch (err) {
     console.error('バックグラウンド処理エラー:', err);
@@ -1262,6 +1396,13 @@ async function runCrawlTask(tabId) {
         successCount: task.stats.successCount,
         failedCount: task.stats.failedCount,
         retryingCount: task.stats.retryingCount,
+        blockCount: task.stats.blockCount,
+        timeoutCount: task.stats.timeoutCount,
+        noNameCount: task.stats.noNameCount,
+        noAddressCount: task.stats.noAddressCount,
+        noPhoneCount: task.stats.noPhoneCount,
+        htmlMismatchCount: task.stats.htmlMismatchCount,
+        otherFailCount: task.stats.otherFailCount,
         isThrottling: task.stats.isThrottling,
         activeConcurrency: 0,
         activeDelay: 0
@@ -1293,6 +1434,15 @@ async function runCrawlTask(tabId) {
         target: 'background',
         type: 'DOWNLOAD_CSV',
         results: task.results,
+        metadata: task.metadata,
+        tabId
+      });
+    }
+    if (!isPopularSubtask && task.failedUrls?.length > 0) {
+      chrome.runtime.sendMessage({
+        target: 'background',
+        type: 'DOWNLOAD_FAILED_URLS',
+        failedUrls: task.failedUrls,
         metadata: task.metadata,
         tabId
       });
@@ -1330,20 +1480,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       maxItems: message.maxItems || Infinity,
       metadata: { media: siteType, area: '', industry: '' },
       abortController: controller,
-      tabelogConcurrency: message.tabelogConcurrency || 5,
-      tabelogDelay: message.tabelogDelay || 800,
+      tabelogConcurrency: message.tabelogConcurrency || 1,
+      tabelogDelay: message.tabelogDelay || 3000,
       hotpepperConcurrency: message.hotpepperConcurrency || 6,
       hotpepperDelay: message.hotpepperDelay || 500,
-      maxRetries: message.maxRetries ?? 2,
-      fetchTimeout: message.fetchTimeout || 10,
-      stats: {
-        successCount: 0,
-        failedCount: 0,
-        retryingCount: 0,
-        isThrottling: false,
-        activeConcurrency: 0,
-        activeDelay: 0
-      }
+      maxRetries: message.maxRetries ?? 1,
+      fetchTimeout: message.fetchTimeout || 20,
+      maxPages: message.maxPages || 20,
+      failedUrls: [],
+      stats: createStats()
     });
     runCrawlTask(tabId);
     sendResponse({ ok: true });
@@ -1382,7 +1527,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({
         results: task.results || [],
         running: task.running || false,
-        metadata: task.metadata || {}
+        metadata: task.metadata || {},
+        stats: task.stats || createStats(),
+        failedUrls: task.failedUrls || []
       });
     } else {
       sendResponse({ results: [], running: false, metadata: {} });
@@ -1401,7 +1548,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       hotpepperConcurrency: message.hotpepperConcurrency,
       hotpepperDelay: message.hotpepperDelay,
       maxRetries: message.maxRetries,
-      fetchTimeout: message.fetchTimeout
+      fetchTimeout: message.fetchTimeout,
+      maxPages: message.maxPages,
+      selectedGenres: message.selectedGenres
     });
     sendResponse({ ok: true });
     return;
@@ -1500,14 +1649,8 @@ async function runPopularGenreCrawl(tabId, listUrl, maxItemsPerGenre, speedConfi
     results: [],
     metadata: { media: siteType, area: '', industry: '人気ジャンル一括' },
     ...speedConfig,
-    stats: {
-      successCount: 0,
-      failedCount: 0,
-      retryingCount: 0,
-      isThrottling: false,
-      activeConcurrency: 0,
-      activeDelay: 0
-    }
+    failedUrls: [],
+    stats: createStats()
   });
 
   try {
@@ -1532,6 +1675,11 @@ async function runPopularGenreCrawl(tabId, listUrl, maxItemsPerGenre, speedConfi
 
     if (siteType === 'tabelog') {
       genreLinks = filterTabelogHdGenreLinks(genreLinks);
+      const selectedGenres = Array.isArray(speedConfig.selectedGenres)
+        ? speedConfig.selectedGenres.filter(Boolean)
+        : [];
+      const targetGenreSet = new Set(selectedGenres.length > 0 ? selectedGenres : DEFAULT_RECOMMENDED_GENRES);
+      genreLinks = genreLinks.filter(link => targetGenreSet.has(link.hdGenre));
       if (genreLinks.length === 0) {
         sendToBackground(tabId, 'ERROR', { message: 'HD投入用ジャンルに対応する食べログジャンルリンクが見つかりませんでした。' });
         activeTasks.delete(parentTaskKey);
@@ -1569,14 +1717,9 @@ async function runPopularGenreCrawl(tabId, listUrl, maxItemsPerGenre, speedConfi
         metadata: { media: siteType, area: '', industry: searchGenreName },
         abortController: subController,
         ...speedConfig,
-        stats: {
-          successCount: 0,
-          failedCount: 0,
-          retryingCount: 0,
-          isThrottling: false,
-          activeConcurrency: 0,
-          activeDelay: 0
-        }
+        maxPages: speedConfig.maxPages || 20,
+        failedUrls: [],
+        stats: createStats()
       });
 
       await runCrawlTask(tempId);
@@ -1605,8 +1748,8 @@ async function runPopularGenreCrawl(tabId, listUrl, maxItemsPerGenre, speedConfi
         });
       }
       if (finishedTask && parentTask) {
-        parentTask.stats.successCount += finishedTask.stats.successCount || 0;
-        parentTask.stats.failedCount += finishedTask.stats.failedCount || 0;
+        mergeStats(parentTask.stats, finishedTask.stats);
+        parentTask.failedUrls.push(...(finishedTask.failedUrls || []));
       }
       activeTasks.delete(tempId);
 
@@ -1637,10 +1780,27 @@ async function runPopularGenreCrawl(tabId, listUrl, maxItemsPerGenre, speedConfi
       successCount: cleanResults.length,
       failedCount: pt?.stats?.failedCount || 0,
       retryingCount: 0,
+      blockCount: pt?.stats?.blockCount || 0,
+      timeoutCount: pt?.stats?.timeoutCount || 0,
+      noNameCount: pt?.stats?.noNameCount || 0,
+      noAddressCount: pt?.stats?.noAddressCount || 0,
+      noPhoneCount: pt?.stats?.noPhoneCount || 0,
+      htmlMismatchCount: pt?.stats?.htmlMismatchCount || 0,
+      otherFailCount: pt?.stats?.otherFailCount || 0,
       isThrottling: false,
       activeConcurrency: 0,
       activeDelay: 0
     });
+
+    if (pt?.failedUrls?.length > 0) {
+      chrome.runtime.sendMessage({
+        target: 'background',
+        type: 'DOWNLOAD_FAILED_URLS',
+        failedUrls: pt.failedUrls,
+        metadata: finalMetadata,
+        tabId
+      });
+    }
 
     chrome.runtime.sendMessage({
       target: 'background',

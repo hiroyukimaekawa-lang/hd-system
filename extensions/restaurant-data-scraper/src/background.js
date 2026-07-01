@@ -195,6 +195,27 @@ function generateCSV(data) {
   return '\uFEFF' + headers.join(',') + '\n' + rows.join('\n');
 }
 
+function generateFailedUrlsCSV(data) {
+  const headers = ['取得日時', '媒体', 'ジャンル', 'ページURL', '店舗URL', '失敗理由', 'HTTPステータス', 'リトライ回数'];
+  const keyMapping = {
+    '取得日時': 'scrapedAt',
+    '媒体': 'source',
+    'ジャンル': 'genre',
+    'ページURL': 'pageUrl',
+    '店舗URL': 'storeUrl',
+    '失敗理由': 'reason',
+    'HTTPステータス': 'httpStatus',
+    'リトライ回数': 'retries'
+  };
+  const escapeField = v => {
+    const s = String(v ?? '');
+    return (s.includes(',') || s.includes('\n') || s.includes('"'))
+      ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const rows = data.map(r => headers.map(h => escapeField(r[keyMapping[h]])).join(','));
+  return '\uFEFF' + headers.join(',') + '\n' + rows.join('\n');
+}
+
 async function triggerDownload(results, metadata, tabId = null) {
   if (!results || results.length === 0) return;
   const timestamp = formatTimestamp();
@@ -229,6 +250,30 @@ async function triggerDownload(results, metadata, tabId = null) {
     } catch (err) {
       console.error('[BG] CSVダウンロード失敗:', err);
     }
+  }
+}
+
+async function triggerFailedUrlsDownload(failedUrls, metadata = {}, tabId = null) {
+  if (!failedUrls || failedUrls.length === 0) return;
+  const timestamp = formatTimestamp();
+  const media = metadata.media === 'tabelog' ? 'tabelog' : (metadata.media === 'hotpepper' ? 'hotpepper' : 'media');
+  const csv = generateFailedUrlsCSV(failedUrls);
+  const base64 = btoa(unescape(encodeURIComponent(csv)));
+  const dataUrl = 'data:text/csv;charset=utf-8;base64,' + base64;
+  const filename = `${media}_failed_urls_${timestamp}.csv`;
+  try {
+    await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
+    console.log('[BG] 失敗URL CSVダウンロード成功:', filename);
+    if (tabId != null) {
+      pushLog(tabId, `失敗URL出力完了：${filename}`, 'warn');
+      chrome.runtime.sendMessage({
+        tabId,
+        type: 'INFO',
+        message: `失敗URL出力完了：${filename}`
+      }).catch(() => { });
+    }
+  } catch (err) {
+    console.error('[BG] 失敗URL CSVダウンロード失敗:', err);
   }
 }
 
@@ -298,6 +343,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
 
+    if (message.type === 'DOWNLOAD_FAILED_URLS') {
+      triggerFailedUrlsDownload(message.failedUrls, message.metadata, message.tabId);
+      sendResponse({ ok: true });
+      return true;
+    }
+
     if (message.type === 'SHOW_NOTIFICATION') {
       showNotification(message.title, message.message);
       sendResponse({ ok: true });
@@ -320,7 +371,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.collected = payload.collected || state.collected;
         state.maxItems = payload.maxItems || state.maxItems;
         state.page = payload.page || state.page;
-        pushLog(tabId, `✅ ${payload.latest}`, 'good');
+        if (payload.latest) pushLog(tabId, `✅ ${payload.latest}`, 'good');
         break;
       case 'INFO':
         pushLog(tabId, `ℹ️ ${payload.message}`, 'info');

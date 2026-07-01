@@ -339,6 +339,32 @@
       transform: translateY(-1px);
     }
 
+    .genre-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .genre-choice {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      color: var(--text);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px 6px;
+      min-width: 0;
+    }
+
+    .genre-choice span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     .footer {
       padding: 8px 14px 10px;
       font-size: 10px;
@@ -379,11 +405,11 @@
       <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <span>食べログ 並行数:</span>
-          <input type="number" id="tabelogConcurrency" min="1" max="10" value="5" style="width: 50px; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 2px 4px; border-radius: 4px; text-align: center;" />
+          <input type="number" id="tabelogConcurrency" min="1" max="2" value="1" style="width: 50px; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 2px 4px; border-radius: 4px; text-align: center;" />
         </div>
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <span>食べログ 待機時間 (ms):</span>
-          <input type="number" id="tabelogDelay" min="200" max="3000" step="100" value="800" style="width: 60px; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 2px 4px; border-radius: 4px; text-align: center;" />
+          <input type="number" id="tabelogDelay" min="1000" max="10000" step="500" value="3000" style="width: 60px; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 2px 4px; border-radius: 4px; text-align: center;" />
         </div>
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <span>ホットペッパー 並行数:</span>
@@ -395,14 +421,23 @@
         </div>
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <span>最大リトライ回数:</span>
-          <input type="number" id="maxRetries" min="0" max="3" value="2" style="width: 50px; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 2px 4px; border-radius: 4px; text-align: center;" />
+          <input type="number" id="maxRetries" min="0" max="3" value="1" style="width: 50px; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 2px 4px; border-radius: 4px; text-align: center;" />
         </div>
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <span>詳細タイムアウト (秒):</span>
-          <input type="number" id="fetchTimeout" min="5" max="30" value="10" style="width: 50px; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 2px 4px; border-radius: 4px; text-align: center;" />
+          <input type="number" id="fetchTimeout" min="5" max="30" value="20" style="width: 50px; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 2px 4px; border-radius: 4px; text-align: center;" />
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span>最大ページ数:</span>
+          <input type="number" id="maxPages" min="1" max="50" value="20" style="width: 50px; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 2px 4px; border-radius: 4px; text-align: center;" />
         </div>
       </div>
     </details>
+  </div>
+
+  <div class="section">
+    <div class="label">人気ジャンル対象</div>
+    <div class="genre-grid" id="popularGenreChoices"></div>
   </div>
 
   <!-- ステータス -->
@@ -418,6 +453,13 @@
           <span>🟢 成功: <strong id="cntSuccess" style="color: var(--green);">0</strong></span>
           <span>🔴 失敗: <strong id="cntFailed" style="color: var(--red);">0</strong></span>
           <span>🔄 リトライ中: <strong id="cntRetrying" style="color: var(--yellow);">0</strong></span>
+          <span>ブロック: <strong id="cntBlock" style="color: var(--red);">0</strong></span>
+          <span>タイムアウト: <strong id="cntTimeout" style="color: var(--yellow);">0</strong></span>
+          <span>店名なし: <strong id="cntNoName" style="color: var(--red);">0</strong></span>
+          <span>住所なし: <strong id="cntNoAddress" style="color: var(--yellow);">0</strong></span>
+          <span>電話なし: <strong id="cntNoPhone" style="color: var(--muted);">0</strong></span>
+          <span>HTML不一致: <strong id="cntHtmlMismatch" style="color: var(--red);">0</strong></span>
+          <span>その他: <strong id="cntOtherFail" style="color: var(--red);">0</strong></span>
           <span class="hidden" id="throttlingIndicator" style="color: var(--red); font-weight: bold;">⚠️ 減速中</span>
         </div>
         <div id="activeParams" style="margin-top: 4px; font-size: 9px; color: var(--muted); display: none;">

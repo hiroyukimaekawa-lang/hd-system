@@ -26,25 +26,46 @@ const hotpepperConcurrency = document.getElementById('hotpepperConcurrency');
 const hotpepperDelay = document.getElementById('hotpepperDelay');
 const maxRetries = document.getElementById('maxRetries');
 const fetchTimeout = document.getElementById('fetchTimeout');
+const maxPages = document.getElementById('maxPages');
+const popularGenreChoices = document.getElementById('popularGenreChoices');
 
 const cntSuccess = document.getElementById('cntSuccess');
 const cntFailed = document.getElementById('cntFailed');
 const cntRetrying = document.getElementById('cntRetrying');
+const cntBlock = document.getElementById('cntBlock');
+const cntTimeout = document.getElementById('cntTimeout');
+const cntNoName = document.getElementById('cntNoName');
+const cntNoAddress = document.getElementById('cntNoAddress');
+const cntNoPhone = document.getElementById('cntNoPhone');
+const cntHtmlMismatch = document.getElementById('cntHtmlMismatch');
+const cntOtherFail = document.getElementById('cntOtherFail');
 const throttlingIndicator = document.getElementById('throttlingIndicator');
 const activeParams = document.getElementById('activeParams');
 const currentConcurrency = document.getElementById('currentConcurrency');
 const currentDelay = document.getElementById('currentDelay');
 
+const HD_POPULAR_GENRES = [
+  'カフェ', '居酒屋', 'スナック', 'Bar', 'パン屋', '焼き鳥', '喫茶店',
+  'お好み焼き', '焼肉', 'スイーツ', '中華', 'ハンバーガー',
+  '蕎麦・うどん', '寿司', '和食', '洋食', '定食・食堂', '弁当',
+  '韓国', 'テイクアウト専門店', 'ラーメン'
+];
+
+const DEFAULT_POPULAR_GENRES = [
+  'カフェ', '居酒屋', 'ラーメン', '焼肉', '寿司', '和食',
+  '中華', '韓国', '焼き鳥', 'パン屋', 'スイーツ'
+];
+
 // 設定のバリデーションと保存
 function validateInputs() {
-  let tc = parseInt(tabelogConcurrency.value) || 5;
+  let tc = parseInt(tabelogConcurrency.value) || 1;
   if (tc < 1) tc = 1;
-  if (tc > 10) tc = 10;
+  if (tc > 2) tc = 2;
   tabelogConcurrency.value = tc;
 
-  let td = parseInt(tabelogDelay.value) || 800;
-  if (td < 200) td = 200;
-  if (td > 3000) td = 3000;
+  let td = parseInt(tabelogDelay.value) || 3000;
+  if (td < 1000) td = 1000;
+  if (td > 10000) td = 10000;
   tabelogDelay.value = td;
 
   let hc = parseInt(hotpepperConcurrency.value) || 6;
@@ -58,14 +79,19 @@ function validateInputs() {
   hotpepperDelay.value = hd;
 
   let mr = parseInt(maxRetries.value);
-  if (isNaN(mr) || mr < 0) mr = 0;
+  if (isNaN(mr) || mr < 0) mr = 1;
   if (mr > 3) mr = 3;
   maxRetries.value = mr;
 
-  let ft = parseInt(fetchTimeout.value) || 10;
+  let ft = parseInt(fetchTimeout.value) || 20;
   if (ft < 5) ft = 5;
   if (ft > 30) ft = 30;
   fetchTimeout.value = ft;
+
+  let mp = parseInt(maxPages.value) || 20;
+  if (mp < 1) mp = 1;
+  if (mp > 50) mp = 50;
+  maxPages.value = mp;
 }
 
 function saveSettings() {
@@ -76,17 +102,45 @@ function saveSettings() {
     hotpepperConcurrency: parseInt(hotpepperConcurrency.value),
     hotpepperDelay: parseInt(hotpepperDelay.value),
     maxRetries: parseInt(maxRetries.value),
-    fetchTimeout: parseInt(fetchTimeout.value)
+    fetchTimeout: parseInt(fetchTimeout.value),
+    maxPages: parseInt(maxPages.value),
+    selectedPopularGenres: getSelectedPopularGenres()
   });
 }
 
-[tabelogConcurrency, tabelogDelay, hotpepperConcurrency, hotpepperDelay, maxRetries, fetchTimeout].forEach(el => {
+[tabelogConcurrency, tabelogDelay, hotpepperConcurrency, hotpepperDelay, maxRetries, fetchTimeout, maxPages].forEach(el => {
   el.addEventListener('change', saveSettings);
 });
 
+function renderPopularGenreChoices(selected = DEFAULT_POPULAR_GENRES) {
+  if (!popularGenreChoices) return;
+  const selectedSet = new Set(selected);
+  popularGenreChoices.innerHTML = '';
+  HD_POPULAR_GENRES.forEach(genre => {
+    const label = document.createElement('label');
+    label.className = 'genre-choice';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.value = genre;
+    checkbox.checked = selectedSet.has(genre);
+    checkbox.addEventListener('change', saveSettings);
+    const span = document.createElement('span');
+    span.textContent = genre;
+    label.appendChild(checkbox);
+    label.appendChild(span);
+    popularGenreChoices.appendChild(label);
+  });
+}
+
+function getSelectedPopularGenres() {
+  return Array.from(popularGenreChoices?.querySelectorAll('input[type="checkbox"]:checked') || [])
+    .map(input => input.value);
+}
+
 function loadSettings() {
   chrome.storage.local.get([
-    'tabelogConcurrency', 'tabelogDelay', 'hotpepperConcurrency', 'hotpepperDelay', 'maxRetries', 'fetchTimeout'
+    'tabelogConcurrency', 'tabelogDelay', 'hotpepperConcurrency', 'hotpepperDelay',
+    'maxRetries', 'fetchTimeout', 'maxPages', 'selectedPopularGenres'
   ], (res) => {
     if (res.tabelogConcurrency != null) tabelogConcurrency.value = res.tabelogConcurrency;
     if (res.tabelogDelay != null) tabelogDelay.value = res.tabelogDelay;
@@ -94,6 +148,8 @@ function loadSettings() {
     if (res.hotpepperDelay != null) hotpepperDelay.value = res.hotpepperDelay;
     if (res.maxRetries != null) maxRetries.value = res.maxRetries;
     if (res.fetchTimeout != null) fetchTimeout.value = res.fetchTimeout;
+    if (res.maxPages != null) maxPages.value = res.maxPages;
+    renderPopularGenreChoices(Array.isArray(res.selectedPopularGenres) ? res.selectedPopularGenres : DEFAULT_POPULAR_GENRES);
     validateInputs();
   });
 }
@@ -102,6 +158,13 @@ function updateCounters(msg) {
   if (msg.successCount != null) cntSuccess.textContent = msg.successCount;
   if (msg.failedCount != null) cntFailed.textContent = msg.failedCount;
   if (msg.retryingCount != null) cntRetrying.textContent = msg.retryingCount;
+  if (msg.blockCount != null) cntBlock.textContent = msg.blockCount;
+  if (msg.timeoutCount != null) cntTimeout.textContent = msg.timeoutCount;
+  if (msg.noNameCount != null) cntNoName.textContent = msg.noNameCount;
+  if (msg.noAddressCount != null) cntNoAddress.textContent = msg.noAddressCount;
+  if (msg.noPhoneCount != null) cntNoPhone.textContent = msg.noPhoneCount;
+  if (msg.htmlMismatchCount != null) cntHtmlMismatch.textContent = msg.htmlMismatchCount;
+  if (msg.otherFailCount != null) cntOtherFail.textContent = msg.otherFailCount;
   
   if (msg.isThrottling) {
     throttlingIndicator.classList.remove('hidden');
@@ -122,6 +185,13 @@ function resetCounters() {
   cntSuccess.textContent = '0';
   cntFailed.textContent = '0';
   cntRetrying.textContent = '0';
+  cntBlock.textContent = '0';
+  cntTimeout.textContent = '0';
+  cntNoName.textContent = '0';
+  cntNoAddress.textContent = '0';
+  cntNoPhone.textContent = '0';
+  cntHtmlMismatch.textContent = '0';
+  cntOtherFail.textContent = '0';
   throttlingIndicator.classList.add('hidden');
   activeParams.style.display = 'none';
 }
@@ -377,12 +447,13 @@ startBtn.addEventListener('click', async () => {
     tabId: tab.id,
     listUrl: tab.url,
     maxItems: maxItems,
-    tabelogConcurrency: parseInt(tabelogConcurrency.value) || 5,
-    tabelogDelay: parseInt(tabelogDelay.value) || 800,
+    tabelogConcurrency: parseInt(tabelogConcurrency.value) || 1,
+    tabelogDelay: parseInt(tabelogDelay.value) || 3000,
     hotpepperConcurrency: parseInt(hotpepperConcurrency.value) || 6,
     hotpepperDelay: parseInt(hotpepperDelay.value) || 500,
-    maxRetries: parseInt(maxRetries.value) ?? 2,
-    fetchTimeout: parseInt(fetchTimeout.value) || 10,
+    maxRetries: parseInt(maxRetries.value) ?? 1,
+    fetchTimeout: parseInt(fetchTimeout.value) || 20,
+    maxPages: parseInt(maxPages.value) || 20,
   }, res => {
     if (!res?.ok) {
       addLog('クロール開始失敗: ' + (res?.error || '不明'), 'err');
@@ -455,12 +526,14 @@ popularGenreBtn.addEventListener('click', async () => {
     tabId: tab.id,
     listUrl: tab.url,
     maxItems: maxItems,
-    tabelogConcurrency: parseInt(tabelogConcurrency.value) || 5,
-    tabelogDelay: parseInt(tabelogDelay.value) || 800,
+    tabelogConcurrency: parseInt(tabelogConcurrency.value) || 1,
+    tabelogDelay: parseInt(tabelogDelay.value) || 3000,
     hotpepperConcurrency: parseInt(hotpepperConcurrency.value) || 6,
     hotpepperDelay: parseInt(hotpepperDelay.value) || 500,
-    maxRetries: parseInt(maxRetries.value) ?? 2,
-    fetchTimeout: parseInt(fetchTimeout.value) || 10,
+    maxRetries: parseInt(maxRetries.value) ?? 1,
+    fetchTimeout: parseInt(fetchTimeout.value) || 20,
+    maxPages: parseInt(maxPages.value) || 20,
+    selectedGenres: getSelectedPopularGenres(),
   }, res => {
     if (!res?.ok) {
       addLog('人気ジャンル一括取得 開始失敗: ' + (res?.error || '不明'), 'err');
