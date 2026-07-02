@@ -6,10 +6,9 @@ const downloadedRunIds = new Set();
 // CSVヘッダー定義 (共通スキーマ + デバッグ項目)
 // =====================================================================
 const CSV_HEADERS = [
-  '店名', 'ジャンル', '検索ジャンル', '取得元ジャンル', '都道府県', '市区町村', '小エリア', '住所', '電話番号',
+  '店名', 'ジャンル', '検索ジャンル', '取得元ジャンル', '都道府県', '市区町村', '住所', '電話番号',
   '定休日', '営業日', '営業開始A', '営業終了A', '営業開始B', '営業終了B',
-  '営業時間原文', 'URL', 'HP有無', '媒体', '取得元URL', '取得日時',
-  '取得モード', '取得範囲モード', '取得ステータス', '除外理由', '一覧取得順', '詳細取得リトライ回数'
+  '営業時間原文', 'URL', 'HP有無', '媒体', '取得元URL', '取得日時'
 ];
 
 function normalizeExportRecord(item) {
@@ -60,7 +59,6 @@ function buildCsvContent(data) {
       escapeCsvValue(r.sourceGenre),
       escapeCsvValue(r.prefecture),
       escapeCsvValue(r.city),
-      escapeCsvValue(r.subArea),
       escapeCsvValue(r.address),
       escapeCsvValue(r.phone),
       escapeCsvValue(r.regularHoliday),
@@ -74,13 +72,7 @@ function buildCsvContent(data) {
       escapeCsvValue(r.hasWebsite),
       escapeCsvValue(r.source),
       escapeCsvValue(r.sourceUrl),
-      escapeCsvValue(r.scrapedAt),
-      escapeCsvValue(r.scrapeMode),
-      escapeCsvValue(r.rangeMode),
-      escapeCsvValue(r.acquisitionStatus),
-      escapeCsvValue(r.excludeReason),
-      escapeCsvValue(r.listRank),
-      escapeCsvValue(r.detailRetryCount)
+      escapeCsvValue(r.scrapedAt)
     ].join(',') + '\n';
   });
   return csv;
