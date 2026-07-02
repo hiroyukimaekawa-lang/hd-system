@@ -198,6 +198,17 @@ function parseTargetArea(searchArea) {
   };
 }
 
+// [EFFICIENCY] 一覧カードの生テキストから「〜市/〜区/〜町/〜村」パターンで
+// 市区町村名を推測する。詳細パネルを開く前の軽量プレフィルタ専用で、
+// あくまで「明確に別エリアだと分かる場合だけ弾く」ための保守的な用途。
+// マッチしない/曖昧な場合は null を返し、通常通り詳細取得へ進める。
+function guessCityFromSnippet(text) {
+  if (!text) return null;
+  const normalized = normalizeAddressText(text);
+  const m = normalized.match(/(.{1,6}?(?:郡.{1,6}?[町村]|市.{1,6}?区|[市区町村]))/);
+  return m ? m[1] : null;
+}
+
 function matchesTargetArea(address, targetPrefecture, targetCity) {
   if (!address) return false;
 
@@ -565,7 +576,18 @@ function scoreCandidateForDetail(item, searchGenre, searchArea, scrapeOptions = 
   if (searchArea) {
     const target = parseTargetArea(searchArea);
     const areaHints = [target.city, scrapeOptions.subArea, scrapeOptions.subAreaLabel].filter(Boolean);
-    if (areaHints.some(hint => normalizeAddressText(text).includes(normalizeAddressText(hint)))) score += 10;
+    const normalizedText = normalizeAddressText(text);
+    if (areaHints.some(hint => normalizedText.includes(normalizeAddressText(hint)))) {
+      score += 10;
+    } else if (target.city) {
+      // [EFFICIENCY] カードのテキストに、対象と明確に異なる市区町村名が
+      // 書かれている場合は、詳細パネルを開く前に強めの減点で弾く。
+      // 曖昧/情報なしの場合は減点しない（誤って正しい候補を落とさないため）。
+      const guessedCity = guessCityFromSnippet(text);
+      if (guessedCity && guessedCity !== normalizeAddressText(target.city)) {
+        score -= 60;
+      }
+    }
   }
   if (excluded.some(word => text.includes(word.normalize('NFKC').toLowerCase()))) score -= 100;
 
