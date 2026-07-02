@@ -573,8 +573,11 @@ function scoreCandidateForDetail(item, searchGenre, searchArea, scrapeOptions = 
 
   const text = `${item.name || ''} ${item.listText || ''}`.normalize('NFKC').toLowerCase();
   const genre = String(searchGenre || '').normalize('NFKC').toLowerCase();
-  const excluded = ['ホテル', 'キャンプ場', '観光案内所', '公園', '駐車場', '神社', '寺', '道の駅', '観光施設', 'レジャー施設'];
-  let score = 0;
+const excluded = [
+  'ホテル', 'キャンプ場', '観光案内所', '公園', '駐車場', '神社', '寺', '道の駅', '観光施設', 'レジャー施設',
+  'ビリヤード', 'ボウリング', 'カラオケ', 'ゲームセンター', 'パチンコ', 'スロット', '雀荘', '麻雀',
+  'スーパー銭湯', '温浴施設', '銭湯', 'フィットネス', 'スポーツジム', '映画館', 'ネットカフェ', '漫画喫茶'
+];  let score = 0;
 
   if (genre && text.includes(genre)) score += 50;
   if ((genre === 'カフェ' || genre === '喫茶店') && isCafeRelated(text, item.name)) score += 40;
