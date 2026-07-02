@@ -534,15 +534,21 @@ const GENRE_ALLOWED_MAP = {
 };
 
 function normalizeGenre(sourceGenre, searchGenre = '') {
-  const raw = String(sourceGenre || searchGenre || '').normalize('NFKC').trim();
-  if (!raw) return '';
+  const raw = String(sourceGenre || '').normalize('NFKC').trim();
+
+  // Googleマップ側から実際のジャンルが全く取得できなかった場合のみ、
+  // 検索キーワードを最後の手段として使う。
+  if (!raw) return (searchGenre || '').normalize('NFKC').trim();
+
   if (GENRE_NORMALIZE_MAP[raw]) return GENRE_NORMALIZE_MAP[raw];
   for (const [key, normalized] of Object.entries(GENRE_NORMALIZE_MAP)) {
     if (raw.includes(key)) {
       return normalized;
     }
   }
-  return searchGenre || raw;
+
+  // 対応表に無いジャンルは、検索語で上書きせず実際に取得した表記をそのまま使う。
+  return raw;
 }
 
 function isCafeRelated(sourceGenre, storeName = '') {
@@ -1319,6 +1325,61 @@ function reportV3Log(message) {
 // =====================================================================
 // スクレイピング本体 (v4.0)
 // =====================================================================
+// =====================================================================
+// [ZOOM-FIX2] 縮尺の強制補正
+// URLに @lat,lng,zoom を指定しても、該当ジャンルの店が少ないエリアでは
+// Googleマップ側が自動的に検索範囲を広げ、指定した縮尺を無視してしまう
+// ことがある。ページ読み込み後、実際の縮尺がまだ広すぎる場合は
+// ズームインボタンを操作して物理的に縮尺を戻す。
+// =====================================================================
+function getCurrentZoomFromUrl() {
+  const m = window.location.href.match(/,(\d+(?:\.\d+)?)z/);
+  return m ? parseFloat(m[1]) : null;
+}
+
+async function enforceMinZoom(targetZoom, maxAdjustSteps = 15) {
+  if (!targetZoom) return;
+  let zoom = getCurrentZoomFromUrl();
+  if (zoom === null || zoom >= targetZoom) return;
+
+  reportV3Log(`🔍 縮尺が広すぎるため補正中（現在${zoom}z → 目標${targetZoom}z）`);
+
+  const zoomInSelectors = [
+    'button[aria-label="ズームイン"]',
+    'button[aria-label="Zoom in"]',
+    '#widget-zoom-in',
+    'button.widget-zoom-in'
+  ];
+
+  let steps = 0;
+  while (zoom !== null && zoom < targetZoom && steps < maxAdjustSteps) {
+    let btn = null;
+    for (const sel of zoomInSelectors) {
+      btn = document.querySelector(sel);
+      if (btn) break;
+    }
+    if (btn) {
+      btn.click();
+    } else {
+      // ボタンが見つからない場合はマップ中央でホイールズームイベントをシミュレート
+      const mapEl = document.querySelector('[role="main"]') || document.body;
+      const rect = mapEl.getBoundingClientRect();
+      mapEl.dispatchEvent(new WheelEvent('wheel', {
+        bubbles: true,
+        cancelable: true,
+        clientX: rect.left + rect.width / 2,
+        clientY: rect.top + rect.height / 2,
+        deltaY: -200
+      }));
+    }
+    await sleep(350);
+    zoom = getCurrentZoomFromUrl();
+    steps++;
+  }
+
+  reportV3Log(zoom !== null ? `🔍 縮尺補正完了: ${zoom}z` : '🔍 縮尺補正: URL取得不可のため確認できず');
+}
+
 async function startScraping(maxItems, targetGenres = [], searchArea = '', searchGenre = '', scrapeOptions = {}) {
   isScrapingActive = true;
   stopRequested = false;
@@ -1335,6 +1396,7 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
   reportV3Log(`検索開始: ${searchArea || '-'} | ジャンル: ${effectiveGenre || '-'} | キーワード: ${searchKey || query || '-'}`);
 
   await sleep(400);
+  await enforceMinZoom(scrapeOptions.targetZoom);
 
   let container = getScrollContainer();
   if (!container) {

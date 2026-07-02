@@ -39,9 +39,9 @@ const V3K = {
 
 const V3_LOG_MAX = 500;
 const V3_MODE_CONFIG = {
-  fast: { label: '高速', cityMax: 30, subAreaMax: 5, maxScrolls: 2, maxEmptyScrolls: 2, timeoutMs: 5 * 60 * 1000, minScore: 50 },
-  standard: { label: '標準', cityMax: 80, subAreaMax: 10, maxScrolls: 3, maxEmptyScrolls: 3, timeoutMs: 15 * 60 * 1000, minScore: 30 },
-  exhaustive: { label: '網羅', cityMax: 200, subAreaMax: 30, maxScrolls: 10, maxEmptyScrolls: 5, timeoutMs: 30 * 60 * 1000, minScore: -Infinity }
+  fast: { label: '高速', cityMax: 30, subAreaMax: 5, maxScrolls: 30, maxEmptyScrolls: 2, timeoutMs: 5 * 60 * 1000, minScore: 50 },
+  standard: { label: '標準', cityMax: 80, subAreaMax: 10, maxScrolls: 60, maxEmptyScrolls: 3, timeoutMs: 15 * 60 * 1000, minScore: 30 },
+  exhaustive: { label: '網羅', cityMax: 200, subAreaMax: 30, maxScrolls: 200, maxEmptyScrolls: 5, timeoutMs: 30 * 60 * 1000, minScore: -Infinity }
 };
 
 // ---- [FIX-3] 重複ドライブ防止 ------------------------------
@@ -409,7 +409,7 @@ function waitForComboDone(area, genre, tabId, timeoutMs = 1800000) { // 30分
 // 自動選択し、広域寄りの結果になってしまう。エリアごとに1回だけ座標を
 // 取得してキャッシュし、以降の同エリア×別ジャンルの検索では
 // 「その座標＋固定ズーム」で狙った密度の範囲に固定する。
-const V3_LOCAL_SEARCH_ZOOM = 15; // 徒歩圏内の店舗が拾える程度のズーム
+const V3_LOCAL_SEARCH_ZOOM = 14; // 徒歩圏内の店舗が拾える程度のズーム（ご指定のスクショに合わせて調整）
 const areaCoordCache = new Map();
 
 function extractLatLngZoomFromUrl(url) {
@@ -523,7 +523,8 @@ async function runCombo(area, genre, runOptions = {}) {
             maxEmptyScrolls: modeConfig.maxEmptyScrolls,
             minScore: modeConfig.minScore,
             subArea: targetArea.subArea || '',
-            subAreaLabel: targetArea.subAreaLabel || ''
+            subAreaLabel: targetArea.subAreaLabel || '',
+            targetZoom: areaCoords ? V3_LOCAL_SEARCH_ZOOM : null
           }
         }, response => {
           if (chrome.runtime.lastError) reject(chrome.runtime.lastError);
