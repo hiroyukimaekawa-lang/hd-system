@@ -266,12 +266,25 @@ async function ensureMapTab() {
   if (tabId) {
     try {
       const t = await chrome.tabs.get(tabId);
-      if (t) return tabId;
+      if (t) {
+        await safeSetAutoDiscardable(tabId);
+        return tabId;
+      }
     } catch (_) { /* タブが閉じられていた */ }
   }
   const tab = await chrome.tabs.create({ url: 'https://www.google.co.jp/maps', active: true });
   await v3Set({ [V3K.tabId]: tab.id });
+  await safeSetAutoDiscardable(tab.id);
   return tab.id;
+}
+
+// [STABILITY] 長時間の非アクティブタブがChromeのメモリ管理で
+// 「破棄（discard）」されると、そのままJSの実行が止まり
+// 「途中で止まる」原因になる。自動破棄を明示的に無効化する。
+async function safeSetAutoDiscardable(tabId) {
+  try {
+    await chrome.tabs.update(tabId, { autoDiscardable: false });
+  } catch (_) { /* 対応していない環境は無視 */ }
 }
 
 // [SPEED-1] DOM 完了後の待ち 1500ms → 800ms → 600ms
@@ -391,6 +404,54 @@ function waitForComboDone(area, genre, tabId, timeoutMs = 1800000) { // 30分
   });
 }
 
+// ---- [ZOOM-FIX] エリア中心座標の解決＆キャッシュ ------------
+// 座標なしで検索すると Google マップ側が「市区町村全体が収まる縮尺」を
+// 自動選択し、広域寄りの結果になってしまう。エリアごとに1回だけ座標を
+// 取得してキャッシュし、以降の同エリア×別ジャンルの検索では
+// 「その座標＋固定ズーム」で狙った密度の範囲に固定する。
+const V3_LOCAL_SEARCH_ZOOM = 15; // 徒歩圏内の店舗が拾える程度のズーム
+const areaCoordCache = new Map();
+
+function extractLatLngZoomFromUrl(url) {
+  const m = String(url || '').match(/@(-?\d+\.\d+),(-?\d+\.\d+),(\d+(?:\.\d+)?)z/);
+  if (!m) return null;
+  return { lat: m[1], lng: m[2], zoom: m[3] };
+}
+
+async function resolveAreaCoordinates(targetArea, tabId) {
+  const cacheKey = JSON.stringify({
+    pref: targetArea.prefecture || '',
+    city: targetArea.city || '',
+    subArea: targetArea.subArea || ''
+  });
+  if (areaCoordCache.has(cacheKey)) return areaCoordCache.get(cacheKey);
+
+  const searchArea = buildGoogleMapsSearchQuery(targetArea, '');
+  if (!searchArea) {
+    areaCoordCache.set(cacheKey, null);
+    return null;
+  }
+
+  try {
+    const placeUrl = `https://www.google.co.jp/maps/place/${encodeURIComponent(searchArea)}`;
+    await chrome.tabs.update(tabId, { url: placeUrl, active: false });
+    await waitForTabComplete(tabId);
+    const tab = await chrome.tabs.get(tabId);
+    const coords = extractLatLngZoomFromUrl(tab.url);
+    if (coords) {
+      await v3Log(`📍 「${searchArea}」の中心座標を取得: ${coords.lat}, ${coords.lng}`);
+    } else {
+      await v3Log(`⚠ 「${searchArea}」の中心座標を取得できませんでした（座標なしで検索を続行します）`);
+    }
+    areaCoordCache.set(cacheKey, coords);
+    return coords;
+  } catch (e) {
+    await v3Log(`⚠ 中心座標の取得に失敗: ${e.message}`);
+    areaCoordCache.set(cacheKey, null);
+    return null;
+  }
+}
+
 // ---- 1コンボ実行 -------------------------------------------
 async function runCombo(area, genre, runOptions = {}) {
   const targetArea = typeof area === 'string' ? parseAreaInput(area) : area;
@@ -404,7 +465,12 @@ async function runCombo(area, genre, runOptions = {}) {
     await v3Log(`⚠ ${areaLabel || '-'} ${genre || '-'} 検索条件が不完全なためスキップ`);
     return { count: 0, items: [] };
   }
-  const url = `https://www.google.co.jp/maps/search/${encodeURIComponent(keyword)}`;
+
+  const tabId = await ensureMapTab();
+  const areaCoords = await resolveAreaCoordinates(targetArea, tabId);
+  const url = areaCoords
+    ? `https://www.google.co.jp/maps/search/${encodeURIComponent(keyword)}/@${areaCoords.lat},${areaCoords.lng},${V3_LOCAL_SEARCH_ZOOM}z`
+    : `https://www.google.co.jp/maps/search/${encodeURIComponent(keyword)}`;
 
   await v3Set({
     [V3K.currentArea]: areaLabel,
@@ -418,7 +484,6 @@ async function runCombo(area, genre, runOptions = {}) {
 
   await v3Log(`${keyword} 開始`);
 
-  const tabId = await ensureMapTab();
   const ok = await navigateTabTo(tabId, url);
   if (!ok) {
     await v3Log(`⚠ ${keyword} ページ読み込みタイムアウト`);
@@ -567,7 +632,15 @@ async function v3Drive() {
 
       await v3Set({ [V3K.areaIdx]: areaIdx, [V3K.genreIdx]: genreIdx });
       const t0 = Date.now();
-      const comboResult = await runCombo(area, genre, { scrapeMode, rangeMode });
+      let comboResult;
+      try {
+        comboResult = await runCombo(area, genre, { scrapeMode, rangeMode });
+      } catch (e) {
+        // [STABILITY] 1コンボの失敗で全体を止めない。ログを残して次へ進む。
+        console.error('[v3] runCombo error:', e);
+        await v3Log(`⚠ ${areaLabel} ${genre} でエラー発生のためスキップ: ${e?.message || e}`);
+        comboResult = { count: 0, items: [] };
+      }
       const dt = (Date.now() - t0) / 1000;
       durations.push(dt);
       await v3Set({ [V3K.comboDurations]: durations });
