@@ -639,6 +639,19 @@ async function v3Drive() {
         }
         const dt = (Date.now() - t0) / 1000;
         durations.push(dt);
+        const taskItems = Array.isArray(taskResult?.items) ? taskResult.items : [];
+        if (taskItems.length) {
+          const safeArea = String(task.area || 'area').replace(/[\\/:*?"<>|\s]+/g, '_');
+          const safeGenre = String(task.outputGenre || task.keyword || 'genre').replace(/[\\/:*?"<>|\s]+/g, '_');
+          chrome.runtime.sendMessage({
+            action: 'triggerV3GenreDownload',
+            downloadId: `${runId || 'v3'}_task_${taskIdx}_${safeArea}_${safeGenre}`,
+            area: task.area || cityForDownload,
+            genre: task.outputGenre || task.keyword || '',
+            data: taskItems
+          }).catch(() => {});
+          await v3Log(`⬇ ${task.area || '-'} ${task.outputGenre || task.keyword || '-'} CSVを出力しました (${taskItems.length}件)`);
+        }
         taskIdx++;
         await v3Set({ [V3K.comboDurations]: durations, [V3K.taskIdx]: taskIdx, [V3K.areaIdx]: taskIdx });
         await v3Log(`${task.area || '-'} ${task.keyword || '-'} 取得 ${taskResult?.items?.length || 0}件`);
@@ -646,17 +659,7 @@ async function v3Drive() {
 
       await v3Set({ [V3K.state]: 'done' });
       await v3Log(`🎉 任意キーワード取得完了`);
-      const doneR = await v3Get([V3K.collected, 'v3_runId']);
-      const allItems = Array.isArray(doneR[V3K.collected]) ? doneR[V3K.collected] : [];
-      if (allItems.length) {
-        chrome.runtime.sendMessage({
-          action: 'triggerV3GenreDownload',
-          downloadId: `${doneR.v3_runId || 'v3'}_tasks_complete`,
-          area: cityForDownload,
-          genre: '',
-          data: allItems
-        }).catch(() => {});
-      }
+      await v3Log(`全件を再出力する場合はCSVボタンを押してください`);
       chrome.runtime.sendMessage({ action: 'v3_done' }).catch(() => {});
       await closeOffscreen();
       return;
