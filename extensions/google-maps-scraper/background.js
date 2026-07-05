@@ -8,7 +8,8 @@ const downloadedRunIds = new Set();
 const CSV_HEADERS = [
   '店名', 'ジャンル', '検索ジャンル', '取得元ジャンル', '都道府県', '市区町村', '住所', '電話番号',
   '定休日', '営業日', '営業開始A', '営業終了A', '営業開始B', '営業終了B',
-  '営業時間原文', 'URL', 'HP有無', '媒体', '取得元URL', '取得日時'
+  '営業時間原文', 'URL', 'HP有無', '媒体', '取得元URL', '取得日時',
+  '検索エリア', '検索クエリ', 'Googleマップジャンル', '取得モード', '取得ステータス'
 ];
 
 function normalizeExportRecord(item) {
@@ -33,8 +34,11 @@ function normalizeExportRecord(item) {
     source: item.source || 'GoogleMap',
     sourceUrl: item.sourceUrl || '',
     scrapedAt: item.scrapedAt || '',
+    area: item.area || item.searchArea || '',
     searchGenre: item.searchGenre || '',
     searchKey: item.searchKey || '',
+    searchQuery: item.searchQuery || '',
+    googleGenre: item.googleGenre || item.sourceGenre || '',
     scrapeMode: item.scrapeMode || '',
     rangeMode: item.rangeMode || '',
     acquisitionStatus: item.acquisitionStatus || '取得成功',
@@ -72,7 +76,12 @@ function buildCsvContent(data) {
       escapeCsvValue(r.hasWebsite),
       escapeCsvValue(r.source),
       escapeCsvValue(r.sourceUrl),
-      escapeCsvValue(r.scrapedAt)
+      escapeCsvValue(r.scrapedAt),
+      escapeCsvValue(r.area),
+      escapeCsvValue(r.searchQuery || r.searchKey),
+      escapeCsvValue(r.googleGenre),
+      escapeCsvValue(r.scrapeMode),
+      escapeCsvValue(r.acquisitionStatus)
     ].join(',') + '\n';
   });
   return csv;
@@ -165,6 +174,14 @@ function splitAreaText(area) {
   };
 }
 
+function exportAreaParts(record, fallback = {}) {
+  const fallbackArea = splitAreaText(fallback.area || '');
+  const searchArea = splitAreaText(record.area || record.searchArea || '');
+  const pref = searchArea.prefecture || record.prefecture || fallback.prefecture || fallbackArea.prefecture || '';
+  const city = searchArea.city || record.city || fallback.city || fallbackArea.city || pref || '';
+  return { prefecture: pref, city };
+}
+
 function dedupeByUrl(data) {
   const seen = new Set();
   return data.filter(item => {
@@ -178,12 +195,10 @@ function dedupeByUrl(data) {
 
 function groupForCsvDownloads(data, fallback = {}) {
   const groups = new Map();
-  const fallbackArea = splitAreaText(fallback.area || '');
 
   data.forEach(item => {
     const r = normalizeExportRecord(item);
-    const pref = r.prefecture || fallback.prefecture || fallbackArea.prefecture || '';
-    const city = r.city || fallback.city || fallbackArea.city || '';
+    const { prefecture: pref, city } = exportAreaParts(r, fallback);
     const genre = r.genre || fallback.genre || r.searchGenre || 'ジャンル';
     const key = [pref, city, genre].join('\u0001');
 
@@ -204,8 +219,6 @@ async function downloadGroupedCsvFiles(data, fallback = {}) {
 
   for (const group of groups) {
     const filename = [
-      'googlemaps',
-      group.prefecture,
       group.city,
       group.genre,
       timestamp

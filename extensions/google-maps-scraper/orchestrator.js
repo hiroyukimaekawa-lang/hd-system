@@ -393,6 +393,8 @@ function waitForComboDone(area, genre, tabId, timeoutMs = 1800000, runOptions = 
           searchGenre: it.searchGenre || genre,
           outputGenre: it.outputGenre || runOptions.outputGenre || '',
           area: areaLabel,
+          searchArea: areaLabel,
+          searchQuery: it.searchQuery || buildGoogleMapsSearchQuery(area, genre),
           subArea: it.subArea || area.subAreaLabel || area.subArea || '',
           rangeMode: it.rangeMode || area.rangeMode || ''
         }));
@@ -794,7 +796,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       if (tasks.length) {
         await v3Set({
           [V3K.state]: 'running',
-          [V3K.city]: tasks[0].area || '',
+          [V3K.city]: city || tasks[0].area || '',
           [V3K.areas]: tasks.map(t => t.area),
           [V3K.genres]: tasks.map(t => t.keyword),
           [V3K.tasks]: tasks,

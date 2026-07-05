@@ -27,6 +27,19 @@
         <input type="text" id="v3-output-genre-input" class="v3-input" placeholder="例: グランピング / アパレル / 中古車関連">
       </div>
       <div class="v3-helper">Googleマップ検索は「エリア + 検索キーワード」で実行し、CSVの「ジャンル」列には「CSV上のジャンル」を入れます。</div>
+      <div id="v3-area-picker" class="v3-area-picker" hidden>
+        <div class="v3-area-picker-head">
+          <span class="v3-label">取得する市町村</span>
+          <span class="v3-summary" id="v3-area-summary"></span>
+        </div>
+        <div class="v3-areas-actions">
+          <button type="button" id="v3-area-all" class="v3-btn-sm">全選択</button>
+          <button type="button" id="v3-area-clear" class="v3-btn-sm">全解除</button>
+        </div>
+        <div id="v3-areas-container" class="v3-areas-container empty">
+          <span class="v3-empty">エリアに「千葉県」と入力すると市町村を選べます。</span>
+        </div>
+      </div>
       <div class="v3-preset-row">
         <button class="v3-btn-sm v3-preset" data-keyword="グランピング" data-genre="グランピング">グランピング</button>
         <button class="v3-btn-sm v3-preset" data-keyword="コテージ" data-genre="グランピング">コテージ</button>

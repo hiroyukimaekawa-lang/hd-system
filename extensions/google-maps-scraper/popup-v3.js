@@ -23,14 +23,15 @@ const V3K = {
   comboDurations: 'v3_comboDurations',
   maxItems: 'v3_maxItems',
   scrapeMode: 'v3_scrapeMode',
-  rangeMode: 'v3_rangeMode'
+  rangeMode: 'v3_rangeMode',
+  selectedAreas: 'v3_selectedAreas'
 };
 
 const OUTPUT_HEADERS = [
   '店名', 'ジャンル', '検索ジャンル', '取得元ジャンル', '都道府県', '市区町村', '住所', '電話番号',
   '定休日', '営業日', '営業開始A', '営業終了A', '営業開始B', '営業終了B',
   '営業時間原文', 'URL', 'HP有無', '媒体', '取得元URL', '取得日時',
-  '検索クエリ', 'Googleマップジャンル', '取得モード', '取得ステータス', '詳細取得リトライ回数', '一覧取得順'
+  '検索エリア', '検索クエリ', 'Googleマップジャンル', '取得モード', '取得ステータス', '詳細取得リトライ回数', '一覧取得順'
 ];
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -46,6 +47,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnReset = document.getElementById('v3-reset');
   const btnCsv = document.getElementById('v3-download-csv');
   const btnXlsx = document.getElementById('v3-download-xlsx');
+  const elAreaPicker = document.getElementById('v3-area-picker');
+  const elAreasContainer = document.getElementById('v3-areas-container');
+  const elAreaSummary = document.getElementById('v3-area-summary');
+  const btnAreaAll = document.getElementById('v3-area-all');
+  const btnAreaClear = document.getElementById('v3-area-clear');
   const elCurArea = document.getElementById('v3-cur-area');
   const elCurGenre = document.getElementById('v3-cur-genre');
   const elAreaProg = document.getElementById('v3-area-progress');
@@ -63,6 +69,19 @@ document.addEventListener('DOMContentLoaded', () => {
   const sendMsg = (msg) => new Promise(resolve => chrome.runtime.sendMessage(msg, resolve));
   const storageGet = (keys) => new Promise(resolve => chrome.storage.local.get(keys, resolve));
   const storageSet = (obj) => new Promise(resolve => chrome.storage.local.set(obj, resolve));
+  let availableAreas = [];
+  let selectedAreas = [];
+  let areaLoadTimer = null;
+
+  const normalizeAreaText = value => String(value || '').normalize('NFKC').replace(/\s+/g, '').trim();
+  const isPrefectureOnlyArea = value => /^(?:北海道|東京都|大阪府|京都府|.{2,3}県)$/.test(normalizeAreaText(value));
+  const composeSelectedArea = (baseArea, selectedArea) => {
+    const base = String(baseArea || '').trim();
+    const selected = String(selectedArea || '').trim();
+    if (!selected) return base;
+    if (base.includes(selected)) return base;
+    return `${base} ${selected}`.trim();
+  };
   const fmtHMS = (sec) => {
     if (!Number.isFinite(sec) || sec < 0) sec = 0;
     const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = Math.floor(sec % 60);
@@ -71,15 +90,17 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   (async () => {
-    const stored = await storageGet([V3K.city, V3K.keyword, V3K.outputGenre, V3K.maxItems, V3K.scrapeMode]);
+    const stored = await storageGet([V3K.city, V3K.keyword, V3K.outputGenre, V3K.maxItems, V3K.scrapeMode, V3K.selectedAreas]);
     if (stored[V3K.city]) elCity.value = stored[V3K.city];
     if (stored[V3K.keyword]) elKeyword.value = stored[V3K.keyword];
     if (stored[V3K.outputGenre]) elOutputGenre.value = stored[V3K.outputGenre];
+    selectedAreas = Array.isArray(stored[V3K.selectedAreas]) ? stored[V3K.selectedAreas] : [];
     if (stored[V3K.scrapeMode]) elScrapeMode.value = stored[V3K.scrapeMode];
     if (stored[V3K.maxItems]) {
       elMaxRange.value = stored[V3K.maxItems];
       elMaxVal.textContent = stored[V3K.maxItems];
     }
+    await loadAreasForInput();
     refreshStatus(true);
     setInterval(refreshStatus, 1000);
   })();
@@ -99,6 +120,20 @@ document.addEventListener('DOMContentLoaded', () => {
       [V3K.outputGenre]: elOutputGenre.value.trim()
     }));
   });
+  elCity.addEventListener('input', () => {
+    clearTimeout(areaLoadTimer);
+    areaLoadTimer = setTimeout(loadAreasForInput, 250);
+  });
+  btnAreaAll.addEventListener('click', () => {
+    selectedAreas = availableAreas.slice();
+    persistSelectedAreas();
+    renderAreaCheckboxes();
+  });
+  btnAreaClear.addEventListener('click', () => {
+    selectedAreas = [];
+    persistSelectedAreas();
+    renderAreaCheckboxes();
+  });
   elMaxRange.addEventListener('input', e => {
     elMaxVal.textContent = e.target.value;
     storageSet({ [V3K.maxItems]: parseInt(e.target.value, 10) });
@@ -117,6 +152,58 @@ document.addEventListener('DOMContentLoaded', () => {
       .filter(t => t.area && t.keyword && t.outputGenre);
   }
 
+  async function loadAreasForInput() {
+    const area = elCity.value.trim();
+    if (!isPrefectureOnlyArea(area)) {
+      availableAreas = [];
+      elAreaPicker.hidden = true;
+      renderAreaCheckboxes();
+      return;
+    }
+
+    const res = await sendMsg({ action: 'v3_getAreas', city: area });
+    availableAreas = res && res.ok && Array.isArray(res.areas) ? res.areas : [];
+    selectedAreas = selectedAreas.filter(areaName => availableAreas.includes(areaName));
+    if (!selectedAreas.length && availableAreas.length) {
+      selectedAreas = availableAreas.slice();
+      persistSelectedAreas();
+    }
+    elAreaPicker.hidden = availableAreas.length === 0;
+    renderAreaCheckboxes();
+  }
+
+  function persistSelectedAreas() {
+    storageSet({ [V3K.selectedAreas]: selectedAreas });
+  }
+
+  function renderAreaCheckboxes() {
+    if (!availableAreas.length) {
+      elAreasContainer.className = 'v3-areas-container empty';
+      elAreasContainer.innerHTML = '<span class="v3-empty">エリアに「千葉県」と入力すると市町村を選べます。</span>';
+      elAreaSummary.textContent = '';
+      return;
+    }
+
+    elAreasContainer.className = 'v3-areas-container';
+    elAreasContainer.innerHTML = availableAreas.map((areaName, index) => {
+      const id = `v3-area-${index}`;
+      const checked = selectedAreas.includes(areaName);
+      return `<label class="v3-area-item${checked ? ' checked' : ''}" for="${id}">
+        <input type="checkbox" id="${id}" value="${escapeHtml(areaName)}" ${checked ? 'checked' : ''}>
+        <span>${escapeHtml(areaName)}</span>
+      </label>`;
+    }).join('');
+
+    elAreasContainer.querySelectorAll('input[type="checkbox"]').forEach(input => {
+      input.addEventListener('change', () => {
+        selectedAreas = Array.from(elAreasContainer.querySelectorAll('input[type="checkbox"]:checked')).map(el => el.value);
+        persistSelectedAreas();
+        renderAreaCheckboxes();
+      });
+    });
+    elAreaSummary.textContent = `${selectedAreas.length} / ${availableAreas.length} 選択`;
+  }
+
   btnStart.addEventListener('click', async () => {
     const bulkTasks = parseBulkTasks(elBulk.value);
     let tasks = bulkTasks;
@@ -127,13 +214,20 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!area) { alert('エリアを入力してください'); return; }
       if (!keyword) { alert('検索キーワードを入力してください'); return; }
       if (!outputGenre) { alert('CSV上のジャンルを入力してください'); return; }
-      tasks = [{ area, keyword, outputGenre }];
+      if (isPrefectureOnlyArea(area) && !availableAreas.length) await loadAreasForInput();
+      if (isPrefectureOnlyArea(area) && availableAreas.length) {
+        if (!selectedAreas.length) { alert('取得する市町村を選択してください'); return; }
+        tasks = selectedAreas.map(areaName => ({ area: composeSelectedArea(area, areaName), keyword, outputGenre }));
+      } else {
+        tasks = [{ area, keyword, outputGenre }];
+      }
     }
 
     const maxItems = parseInt(elMaxRange.value, 10) || 100;
     const scrapeMode = elScrapeMode.value || 'standard';
+    const baseCity = elCity.value.trim() || tasks[0]?.area || '';
     await storageSet({
-      [V3K.city]: tasks[0]?.area || '',
+      [V3K.city]: baseCity,
       [V3K.keyword]: tasks[0]?.keyword || '',
       [V3K.outputGenre]: tasks[0]?.outputGenre || '',
       [V3K.maxItems]: maxItems,
@@ -142,6 +236,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const res = await sendMsg({
       action: 'v3_start',
+      city: baseCity,
       tasks,
       maxItems,
       scrapeMode,
@@ -182,7 +277,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const blob = toSpreadsheetXmlBlob(data);
     const d = new Date();
     const z = n => String(n).padStart(2, '0');
-    const name = `googlemaps_${sanitize(r[V3K.city] || 'list')}_${d.getFullYear()}${z(d.getMonth()+1)}${z(d.getDate())}_${z(d.getHours())}${z(d.getMinutes())}.xls`;
+    const name = `${buildExportName(data, r[V3K.city])}_${d.getFullYear()}${z(d.getMonth()+1)}${z(d.getDate())}_${z(d.getHours())}${z(d.getMinutes())}.xls`;
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -194,6 +289,22 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function sanitize(s) { return String(s || '').replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, '_').slice(0, 50); }
+  function splitAreaText(area) {
+    const text = String(area || '').replace(/\s+/g, '').trim();
+    const m = text.match(/^((?:北海道|東京都|大阪府|京都府|.{2,3}県))?((?:.+?郡.+?[町村]|.+?市.+?区|.+?[市区町村]))?/);
+    return { prefecture: m?.[1] || '', city: m?.[2] || text };
+  }
+  function buildExportName(data, fallbackArea) {
+    const first = data[0] || {};
+    const area = splitAreaText(first.area || first.searchArea || fallbackArea || '');
+    const city = area.city || area.prefecture || 'list';
+    const genre = first.genre || first.searchGenre || 'ジャンル';
+    const uniqueKeys = new Set(data.map(item => {
+      const itemArea = splitAreaText(item.area || item.searchArea || fallbackArea || '');
+      return `${itemArea.city || itemArea.prefecture || ''}\u0001${item.genre || item.searchGenre || ''}`;
+    }));
+    return sanitize(uniqueKeys.size === 1 ? `${city}_${genre}` : `${city}_${genre}_ほか`);
+  }
   function escXml(s) {
     return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;').replace(/'/g, '&apos;').replace(/\n/g, '&#10;');
@@ -203,7 +314,7 @@ document.addEventListener('DOMContentLoaded', () => {
       it.name, it.genre, it.searchGenre, it.sourceGenre, it.prefecture, it.city, it.address, it.phone,
       it.regularHoliday, it.businessDays, it.openTimeA, it.closeTimeA, it.openTimeB, it.closeTimeB,
       it.rawHours, it.url, it.hasWebsite || '無', it.source || 'GoogleMap', it.sourceUrl, it.scrapedAt,
-      it.searchQuery || it.searchKey, it.googleGenre || it.sourceGenre, it.scrapeMode, it.acquisitionStatus || '取得成功',
+      it.area || it.searchArea, it.searchQuery || it.searchKey, it.googleGenre || it.sourceGenre, it.scrapeMode, it.acquisitionStatus || '取得成功',
       it.detailRetryCount ?? '', it.listRank ?? ''
     ];
   }
