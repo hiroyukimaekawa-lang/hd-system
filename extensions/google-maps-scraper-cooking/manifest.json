@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Google Maps Lead Scraper - Keyword Mode",
-  "version": "4.1.0",
-  "description": "任意キーワードでGoogleマップから営業リストを取得する拡張機能（オートスクロール＋詳細クリック取得）",
+  "name": "Google Maps Scraper v3",
+  "version": "3.1.0",
+  "description": "Googleマップから店舗情報を抽出してCSV/XLSXでダウンロードする拡張機能（v3.1: 接続エラー修正・高速化）",
   "permissions": [
     "activeTab",
     "scripting",

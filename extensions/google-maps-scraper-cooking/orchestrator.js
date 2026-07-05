@@ -34,12 +34,7 @@ const V3K = {
   maxItems: 'v3_maxItems',
   comboStart: 'v3_comboStart',
   scrapeMode: 'v3_scrapeMode',
-  rangeMode: 'v3_rangeMode',
-  taskMode: 'v3_taskMode',
-  tasks: 'v3_tasks',
-  totalTasks: 'v3_totalTasks',
-  taskIdx: 'v3_taskIdx',
-  outputGenre: 'v3_outputGenre'
+  rangeMode: 'v3_rangeMode'
 };
 
 const V3_LOG_MAX = 500;
@@ -343,7 +338,7 @@ async function waitForContentScript(tabId, retryMs = 12000, intervalMs = 150) {
 }
 
 // ---- [FIX-2] waitForComboDone: 無進捗タイムアウト付き ----------
-function waitForComboDone(area, genre, tabId, timeoutMs = 1800000, runOptions = {}) { // 30分
+function waitForComboDone(area, genre, tabId, timeoutMs = 1800000) { // 30分
   return new Promise(resolve => {
     const areaLabel = areaDisplayName(area);
     let lastReportedCount = 0;
@@ -391,7 +386,6 @@ function waitForComboDone(area, genre, tabId, timeoutMs = 1800000, runOptions = 
         const enriched = fresh.map(it => ({
           ...it,
           searchGenre: it.searchGenre || genre,
-          outputGenre: it.outputGenre || runOptions.outputGenre || '',
           area: areaLabel,
           subArea: it.subArea || area.subAreaLabel || area.subArea || '',
           rangeMode: it.rangeMode || area.rangeMode || ''
@@ -463,14 +457,12 @@ async function runCombo(area, genre, runOptions = {}) {
   const targetArea = typeof area === 'string' ? parseAreaInput(area) : area;
   const areaLabel = areaDisplayName(targetArea);
   const searchArea = buildGoogleMapsSearchQuery(targetArea, '');
-  const searchKeyword = runOptions.searchKeyword || genre;
-  const outputGenre = runOptions.outputGenre || genre;
-  const keyword = runOptions.searchQuery || buildGoogleMapsSearchQuery(targetArea, searchKeyword);
+  const keyword = buildGoogleMapsSearchQuery(targetArea, genre);
   const scrapeMode = normalizeScrapeMode(runOptions.scrapeMode);
   const rangeMode = normalizeRangeMode(runOptions.rangeMode || targetArea.rangeMode);
   const modeConfig = V3_MODE_CONFIG[scrapeMode];
-  if (!targetArea.city || !searchKeyword || (targetArea.subArea && !targetArea.prefecture)) {
-    await v3Log(`⚠ ${areaLabel || '-'} ${searchKeyword || '-'} 検索条件が不完全なためスキップ`);
+  if (!targetArea.city || !genre || (targetArea.subArea && !targetArea.prefecture)) {
+    await v3Log(`⚠ ${areaLabel || '-'} ${genre || '-'} 検索条件が不完全なためスキップ`);
     return { count: 0, items: [] };
   }
 
@@ -482,9 +474,8 @@ async function runCombo(area, genre, runOptions = {}) {
 
   await v3Set({
     [V3K.currentArea]: areaLabel,
-    [V3K.currentGenre]: searchKeyword,
+    [V3K.currentGenre]: genre,
     [V3K.currentKw]: keyword,
-    [V3K.outputGenre]: outputGenre,
     [V3K.currentUrl]: url,
     [V3K.comboStart]: Date.now(),
     scrapedData: [],
@@ -523,19 +514,14 @@ async function runCombo(area, genre, runOptions = {}) {
           targetGenres: [],
           filterConfig: { enabled: false },
           searchArea,
-          searchGenre: searchKeyword,
+          searchGenre: genre,
           scrapeOptions: {
             scrapeMode,
             scrapeModeLabel: modeConfig.label,
-            keywordMode: !!runOptions.keywordMode,
-            outputGenre,
-            searchKeyword,
-            searchQuery: keyword,
-            disablePreGenreExclusion: !!runOptions.disablePreGenreExclusion,
             rangeMode,
             maxScrolls: modeConfig.maxScrolls,
             maxEmptyScrolls: modeConfig.maxEmptyScrolls,
-            minScore: runOptions.disablePreGenreExclusion ? -Infinity : modeConfig.minScore,
+            minScore: modeConfig.minScore,
             subArea: targetArea.subArea || '',
             subAreaLabel: targetArea.subAreaLabel || '',
             targetZoom: areaCoords ? V3_LOCAL_SEARCH_ZOOM : null
@@ -561,23 +547,8 @@ async function runCombo(area, genre, runOptions = {}) {
     }
   }
 
-  const items = await waitForComboDone(targetArea, searchKeyword, tabId, modeConfig.timeoutMs, { outputGenre });
+  const items = await waitForComboDone(targetArea, genre, tabId, modeConfig.timeoutMs);
   return { count: items.length, items };
-}
-
-async function runTask(task, runOptions = {}) {
-  const areaText = String(task?.area || '').trim();
-  const keyword = String(task?.keyword || '').trim();
-  const outputGenre = String(task?.outputGenre || keyword || '').trim();
-  const searchQuery = [areaText, keyword].filter(Boolean).join(' ');
-  return runCombo(areaText, keyword, {
-    ...runOptions,
-    keywordMode: true,
-    disablePreGenreExclusion: true,
-    outputGenre,
-    searchKeyword: keyword,
-    searchQuery
-  });
 }
 
 // ---- メインドライバ ----------------------------------------
@@ -593,7 +564,7 @@ async function v3Drive() {
     const r = await v3Get([
       V3K.state, V3K.areas, V3K.genres, V3K.areaIdx, V3K.genreIdx,
       V3K.totalAreas, V3K.totalGenres, V3K.comboDurations, 'v3_runId',
-      V3K.city, V3K.scrapeMode, V3K.rangeMode, V3K.taskMode, V3K.tasks, V3K.taskIdx, V3K.totalTasks
+      V3K.city, V3K.scrapeMode, V3K.rangeMode
     ]);
     if (r[V3K.state] !== 'running') return;
 
@@ -606,58 +577,6 @@ async function v3Drive() {
     const scrapeMode = normalizeScrapeMode(r[V3K.scrapeMode]);
     const rangeMode = normalizeRangeMode(r[V3K.rangeMode]);
     const cityForDownload = r[V3K.city] || '';
-
-    if (r[V3K.taskMode]) {
-      const tasks = Array.isArray(r[V3K.tasks]) ? r[V3K.tasks] : [];
-      let taskIdx = r[V3K.taskIdx] || 0;
-      while (taskIdx < tasks.length) {
-        const cur = await v3Get([V3K.state]);
-        if (cur[V3K.state] !== 'running') {
-          await v3Log('停止しました');
-          return;
-        }
-        const task = tasks[taskIdx];
-        await v3Set({
-          [V3K.taskIdx]: taskIdx,
-          [V3K.areaIdx]: taskIdx,
-          [V3K.genreIdx]: 0,
-          [V3K.currentArea]: task.area || '',
-          [V3K.currentGenre]: task.keyword || '',
-          [V3K.outputGenre]: task.outputGenre || task.keyword || ''
-        });
-        const t0 = Date.now();
-        let taskResult;
-        try {
-          taskResult = await runTask(task, { scrapeMode, rangeMode: 'whole' });
-        } catch (e) {
-          console.error('[v3] runTask error:', e);
-          await v3Log(`⚠ ${task.area || '-'} ${task.keyword || '-'} でエラー発生のためスキップ: ${e?.message || e}`);
-          taskResult = { count: 0, items: [] };
-        }
-        const dt = (Date.now() - t0) / 1000;
-        durations.push(dt);
-        taskIdx++;
-        await v3Set({ [V3K.comboDurations]: durations, [V3K.taskIdx]: taskIdx, [V3K.areaIdx]: taskIdx });
-        await v3Log(`${task.area || '-'} ${task.keyword || '-'} 取得 ${taskResult?.items?.length || 0}件`);
-      }
-
-      await v3Set({ [V3K.state]: 'done' });
-      await v3Log(`🎉 任意キーワード取得完了`);
-      const doneR = await v3Get([V3K.collected, 'v3_runId']);
-      const allItems = Array.isArray(doneR[V3K.collected]) ? doneR[V3K.collected] : [];
-      if (allItems.length) {
-        chrome.runtime.sendMessage({
-          action: 'triggerV3GenreDownload',
-          downloadId: `${doneR.v3_runId || 'v3'}_tasks_complete`,
-          area: cityForDownload,
-          genre: '',
-          data: allItems
-        }).catch(() => {});
-      }
-      chrome.runtime.sendMessage({ action: 'v3_done' }).catch(() => {});
-      await closeOffscreen();
-      return;
-    }
 
     while (true) {
       const cur = await v3Get([V3K.state]);
@@ -779,79 +698,37 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       const { city, areas, genres, maxItems } = req;
       const scrapeMode = normalizeScrapeMode(req.scrapeMode);
       const rangeMode = normalizeRangeMode(req.rangeMode);
+      let useAreas = await buildTargetAreasForRun(city || '', areas || [], rangeMode);
+      const useGenres = genres && genres.length ? genres : await getGenres();
       const runId = 'v3_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
 
-      const inputTasks = Array.isArray(req.tasks) ? req.tasks : [];
-      const tasks = inputTasks
-        .map(t => ({
-          area: String(t?.area || '').trim(),
-          keyword: String(t?.keyword || '').trim(),
-          outputGenre: String(t?.outputGenre || t?.keyword || '').trim()
-        }))
-        .filter(t => t.area && t.keyword && t.outputGenre);
-
-      if (tasks.length) {
-        await v3Set({
-          [V3K.state]: 'running',
-          [V3K.city]: tasks[0].area || '',
-          [V3K.areas]: tasks.map(t => t.area),
-          [V3K.genres]: tasks.map(t => t.keyword),
-          [V3K.tasks]: tasks,
-          [V3K.taskMode]: true,
-          [V3K.totalTasks]: tasks.length,
-          [V3K.taskIdx]: 0,
-          [V3K.totalAreas]: tasks.length,
-          [V3K.totalGenres]: 1,
-          [V3K.areaIdx]: 0,
-          [V3K.genreIdx]: 0,
-          [V3K.logs]: [],
-          [V3K.collected]: [],
-          [V3K.startTime]: Date.now(),
-          [V3K.comboDurations]: [],
-          [V3K.maxItems]: maxItems ?? 100,
-          [V3K.scrapeMode]: scrapeMode,
-          [V3K.rangeMode]: 'whole',
-          scrapedData: [],
-          v3_runId: runId,
-          v3_stopReason: ''
-        });
-        await v3Log(`任意キーワード取得開始: ${tasks.length}タスク | モード ${V3_MODE_CONFIG[scrapeMode].label} | runId: ${runId}`);
-      } else {
-        let useAreas = await buildTargetAreasForRun(city || '', areas || [], rangeMode);
-        const useGenres = genres && genres.length ? genres : await getGenres();
-        await v3Set({
-          [V3K.state]: 'running',
-          [V3K.city]: city || '',
-          [V3K.areas]: useAreas,
-          [V3K.genres]: useGenres,
-          [V3K.tasks]: [],
-          [V3K.taskMode]: false,
-          [V3K.totalTasks]: 0,
-          [V3K.taskIdx]: 0,
-          [V3K.totalAreas]: useAreas.length,
-          [V3K.totalGenres]: useGenres.length,
-          [V3K.areaIdx]: 0,
-          [V3K.genreIdx]: 0,
-          [V3K.logs]: [],
-          [V3K.collected]: [],
-          [V3K.startTime]: Date.now(),
-          [V3K.comboDurations]: [],
-          [V3K.maxItems]: maxItems ?? 100,
-          [V3K.scrapeMode]: scrapeMode,
-          [V3K.rangeMode]: rangeMode,
-          scrapedData: [],
-          v3_runId: runId,
-          v3_stopReason: ''
-        });
-        await v3Log(`v3 開始: ${city || '(エリア指定なし)'} | モード ${V3_MODE_CONFIG[scrapeMode].label} | 範囲 ${rangeMode} | 小エリア ${useAreas.length} × ジャンル ${useGenres.length} | runId: ${runId}`);
-      }
+      await v3Set({
+        [V3K.state]: 'running',
+        [V3K.city]: city || '',
+        [V3K.areas]: useAreas,
+        [V3K.genres]: useGenres,
+        [V3K.totalAreas]: useAreas.length,
+        [V3K.totalGenres]: useGenres.length,
+        [V3K.areaIdx]: 0,
+        [V3K.genreIdx]: 0,
+        [V3K.logs]: [],
+        [V3K.collected]: [],
+        [V3K.startTime]: Date.now(),
+        [V3K.comboDurations]: [],
+        [V3K.maxItems]: maxItems ?? 100,
+        [V3K.scrapeMode]: scrapeMode,
+        [V3K.rangeMode]: rangeMode,
+        scrapedData: [],
+        v3_runId: runId,
+        v3_stopReason: ''
+      });
+      await v3Log(`v3 開始: ${city || '(エリア指定なし)'} | モード ${V3_MODE_CONFIG[scrapeMode].label} | 範囲 ${rangeMode} | 小エリア ${useAreas.length} × ジャンル ${useGenres.length} | runId: ${runId}`);
 
       try { chrome.power.requestKeepAwake('display'); } catch (_) { }
       try { chrome.alarms.create('v3_tick', { periodInMinutes: 0.5 }); } catch (_) { }
       await ensureOffscreen();
 
-      const statusForResponse = await v3Get([V3K.totalAreas, V3K.totalGenres, V3K.totalTasks]);
-      sendResponse({ ok: true, totalAreas: statusForResponse[V3K.totalAreas] || 0, totalGenres: statusForResponse[V3K.totalGenres] || 0, totalTasks: statusForResponse[V3K.totalTasks] || 0 });
+      sendResponse({ ok: true, totalAreas: useAreas.length, totalGenres: useGenres.length });
 
       // [FIX-3] driveRunning フラグ付きで起動
       v3Drive().catch(async e => {
@@ -911,8 +788,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         [V3K.currentUrl]: '', [V3K.currentKw]: '',
         [V3K.logs]: [], [V3K.collected]: [],
         [V3K.startTime]: 0, [V3K.comboDurations]: [],
-        [V3K.scrapeMode]: 'standard', [V3K.rangeMode]: 'split',
-        [V3K.taskMode]: false, [V3K.tasks]: [], [V3K.totalTasks]: 0, [V3K.taskIdx]: 0, [V3K.outputGenre]: ''
+        [V3K.scrapeMode]: 'standard', [V3K.rangeMode]: 'split'
       });
       sendResponse({ ok: true });
     })();
@@ -926,7 +802,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         V3K.areaIdx, V3K.genreIdx, V3K.totalAreas, V3K.totalGenres,
         V3K.currentArea, V3K.currentGenre, V3K.currentUrl, V3K.currentKw,
         V3K.logs, V3K.collected, V3K.startTime, V3K.comboDurations,
-        V3K.scrapeMode, V3K.rangeMode, V3K.taskMode, V3K.tasks, V3K.totalTasks, V3K.taskIdx, V3K.outputGenre
+        V3K.scrapeMode, V3K.rangeMode
       ]);
       sendResponse({ ok: true, status: r });
     })();

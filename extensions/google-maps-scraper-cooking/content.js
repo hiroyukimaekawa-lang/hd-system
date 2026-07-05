@@ -598,7 +598,7 @@ const excluded = [
       }
     }
   }
-  if (!scrapeOptions.disablePreGenreExclusion && excluded.some(word => text.includes(word.normalize('NFKC').toLowerCase()))) score -= 100;
+  if (excluded.some(word => text.includes(word.normalize('NFKC').toLowerCase()))) score -= 100;
 
   return score;
 }
@@ -1393,8 +1393,6 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
   const query = getCurrentQuery();
   const { searchGenre: parsedGenre, searchKey } = parseSearchMeta(query, searchGenre);
   const effectiveGenre = searchGenre || parsedGenre;
-  const outputGenre = String(scrapeOptions.outputGenre || effectiveGenre || '').trim();
-  const searchQueryForRecord = scrapeOptions.searchQuery || query || '';
   const speedStats = createSpeedStats({ searchArea, searchGenre: effectiveGenre, searchKey, maxItems: effectiveMaxItems });
   const targetArea = parseTargetArea(searchArea);
 
@@ -1818,9 +1816,8 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
 
         const record = {
           name: detail.name,
-          genre: outputGenre || detail.genre,
+          genre: detail.genre,
           sourceGenre: detail.googleGenre,
-          googleGenre: detail.googleGenre,
           prefecture: parsedAddr.prefecture,
           city: parsedAddr.city,
           subArea: scrapeOptions.subAreaLabel || scrapeOptions.subArea || '',
@@ -1841,9 +1838,7 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
           sourceUrl: searchPageUrl,
           scrapedAt: new Date().toISOString(),
           searchGenre: effectiveGenre,
-          outputGenre: outputGenre || '',
           searchKey,
-          searchQuery: searchQueryForRecord,
           scrapeMode: scrapeOptions.scrapeModeLabel || scrapeOptions.scrapeMode || '',
           rangeMode: scrapeOptions.rangeMode || '',
           acquisitionStatus: '取得成功',
