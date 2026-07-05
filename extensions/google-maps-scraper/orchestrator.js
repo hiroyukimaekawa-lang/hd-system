@@ -46,7 +46,7 @@ const V3_LOG_MAX = 500;
 const V3_MODE_CONFIG = {
   fast: { label: '高速', cityMax: 30, subAreaMax: 5, maxScrolls: 30, maxEmptyScrolls: 2, timeoutMs: 5 * 60 * 1000, minScore: 50 },
   standard: { label: '標準', cityMax: 80, subAreaMax: 10, maxScrolls: 60, maxEmptyScrolls: 3, timeoutMs: 15 * 60 * 1000, minScore: 30 },
-  exhaustive: { label: '網羅', cityMax: 200, subAreaMax: 30, maxScrolls: 200, maxEmptyScrolls: 5, timeoutMs: 30 * 60 * 1000, minScore: -Infinity }
+  exhaustive: { label: '網羅', cityMax: 500, subAreaMax: 30, maxScrolls: 200, maxEmptyScrolls: 5, timeoutMs: 30 * 60 * 1000, minScore: -Infinity }
 };
 
 // ---- [FIX-3] 重複ドライブ防止 ------------------------------
@@ -469,7 +469,8 @@ async function runCombo(area, genre, runOptions = {}) {
   const scrapeMode = normalizeScrapeMode(runOptions.scrapeMode);
   const rangeMode = normalizeRangeMode(runOptions.rangeMode || targetArea.rangeMode);
   const modeConfig = V3_MODE_CONFIG[scrapeMode];
-  if (!targetArea.city || !searchKeyword || (targetArea.subArea && !targetArea.prefecture)) {
+  const hasSearchArea = !!(targetArea.prefecture || targetArea.city);
+  if (!hasSearchArea || !searchKeyword || (targetArea.subArea && !targetArea.prefecture)) {
     await v3Log(`⚠ ${areaLabel || '-'} ${searchKeyword || '-'} 検索条件が不完全なためスキップ`);
     return { count: 0, items: [] };
   }
