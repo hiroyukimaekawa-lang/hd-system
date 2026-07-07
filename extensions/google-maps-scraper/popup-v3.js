@@ -36,6 +36,7 @@ const OUTPUT_HEADERS = [
 
 document.addEventListener('DOMContentLoaded', () => {
   const elCity = document.getElementById('v3-city-input');
+  const elAreaGroup = document.getElementById('v3-area-group-select');
   const elKeyword = document.getElementById('v3-keyword-input');
   const elOutputGenre = document.getElementById('v3-output-genre-input');
   const elBulk = document.getElementById('v3-bulk-input');
@@ -71,10 +72,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const storageSet = (obj) => new Promise(resolve => chrome.storage.local.set(obj, resolve));
   let availableAreas = [];
   let selectedAreas = [];
+  let areaGroups = [];
   let areaLoadTimer = null;
 
   const normalizeAreaText = value => String(value || '').normalize('NFKC').replace(/\s+/g, '').trim();
   const isPrefectureOnlyArea = value => /^(?:北海道|東京都|大阪府|京都府|.{2,3}県)$/.test(normalizeAreaText(value));
+  const isRegisteredAreaGroup = value => {
+    const normalized = normalizeAreaText(value);
+    return areaGroups.some(group => normalizeAreaText(group) === normalized);
+  };
+  const shouldLoadAreaList = value => isPrefectureOnlyArea(value) || isRegisteredAreaGroup(value);
   const composeSelectedArea = (baseArea, selectedArea) => {
     const base = String(baseArea || '').trim();
     const selected = String(selectedArea || '').trim();
@@ -100,18 +107,12 @@ document.addEventListener('DOMContentLoaded', () => {
       elMaxRange.value = stored[V3K.maxItems];
       elMaxVal.textContent = stored[V3K.maxItems];
     }
+    await loadAreaGroups();
+    syncAreaGroupSelect();
     await loadAreasForInput();
     refreshStatus(true);
     setInterval(refreshStatus, 1000);
   })();
-
-  document.querySelectorAll('.v3-preset').forEach(btn => {
-    btn.addEventListener('click', () => {
-      elKeyword.value = btn.dataset.keyword || '';
-      elOutputGenre.value = btn.dataset.genre || '';
-      storageSet({ [V3K.keyword]: elKeyword.value, [V3K.outputGenre]: elOutputGenre.value });
-    });
-  });
 
   [elCity, elKeyword, elOutputGenre].forEach(el => {
     el.addEventListener('input', () => storageSet({
@@ -121,8 +122,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }));
   });
   elCity.addEventListener('input', () => {
+    syncAreaGroupSelect();
     clearTimeout(areaLoadTimer);
     areaLoadTimer = setTimeout(loadAreasForInput, 250);
+  });
+  elAreaGroup.addEventListener('change', () => {
+    if (!elAreaGroup.value) return;
+    elCity.value = elAreaGroup.value;
+    selectedAreas = [];
+    storageSet({ [V3K.city]: elCity.value.trim(), [V3K.selectedAreas]: selectedAreas });
+    loadAreasForInput();
   });
   btnAreaAll.addEventListener('click', () => {
     selectedAreas = availableAreas.slice();
@@ -152,9 +161,23 @@ document.addEventListener('DOMContentLoaded', () => {
       .filter(t => t.area && t.keyword && t.outputGenre);
   }
 
+  async function loadAreaGroups() {
+    const res = await sendMsg({ action: 'v3_getAreaGroups' });
+    areaGroups = res && res.ok && Array.isArray(res.groups) ? res.groups : [];
+    elAreaGroup.innerHTML = '<option value="">地域を選択</option>' + areaGroups
+      .map(group => `<option value="${escapeHtml(group)}">${escapeHtml(group)}</option>`)
+      .join('');
+  }
+
+  function syncAreaGroupSelect() {
+    const normalized = normalizeAreaText(elCity.value);
+    const matched = areaGroups.find(group => normalizeAreaText(group) === normalized);
+    elAreaGroup.value = matched || '';
+  }
+
   async function loadAreasForInput() {
     const area = elCity.value.trim();
-    if (!isPrefectureOnlyArea(area)) {
+    if (!shouldLoadAreaList(area)) {
       availableAreas = [];
       elAreaPicker.hidden = true;
       renderAreaCheckboxes();
@@ -179,7 +202,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function renderAreaCheckboxes() {
     if (!availableAreas.length) {
       elAreasContainer.className = 'v3-areas-container empty';
-      elAreasContainer.innerHTML = '<span class="v3-empty">エリアに「千葉県」と入力すると市町村を選べます。</span>';
+      elAreasContainer.innerHTML = '<span class="v3-empty">登録地域を選ぶと市町村を選べます。</span>';
       elAreaSummary.textContent = '';
       return;
     }
@@ -213,9 +236,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const outputGenre = elOutputGenre.value.trim() || keyword;
       if (!area) { alert('エリアを入力してください'); return; }
       if (!keyword) { alert('検索キーワードを入力してください'); return; }
-      if (!outputGenre) { alert('CSV上のジャンルを入力してください'); return; }
-      if (isPrefectureOnlyArea(area) && !availableAreas.length) await loadAreasForInput();
-      if (isPrefectureOnlyArea(area) && availableAreas.length) {
+      if (shouldLoadAreaList(area) && !availableAreas.length) await loadAreasForInput();
+      if (shouldLoadAreaList(area) && availableAreas.length) {
         if (!selectedAreas.length) { alert('取得する市町村を選択してください'); return; }
         tasks = selectedAreas.map(areaName => ({ area: composeSelectedArea(area, areaName), keyword, outputGenre }));
       } else {

@@ -229,6 +229,11 @@ async function getAreasForCity(rawCity) {
   return [city];
 }
 
+async function getAreaGroups() {
+  const data = await loadJson('config/areas.json');
+  return data?.cities ? Object.keys(data.cities) : [];
+}
+
 async function buildTargetAreasForRun(city, selectedAreas, rangeMode) {
   const baseArea = parseAreaInput(city || '');
   const mode = normalizeRangeMode(rangeMode);
@@ -768,6 +773,14 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     (async () => {
       const areas = await getAreasForCity(req.city || '');
       sendResponse({ ok: true, areas });
+    })();
+    return true;
+  }
+
+  if (req.action === 'v3_getAreaGroups') {
+    (async () => {
+      const groups = await getAreaGroups();
+      sendResponse({ ok: true, groups });
     })();
     return true;
   }
