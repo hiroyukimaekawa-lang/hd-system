@@ -517,7 +517,52 @@ const GENRE_NORMALIZE_MAP = {
   '拉麺': 'ラーメン',
   'つけ麺': 'ラーメン',
   '油そば': 'ラーメン',
-  'まぜそば': 'ラーメン'
+  'まぜそば': 'ラーメン',
+
+  'アパレル': 'アパレル',
+  '古着': 'アパレル',
+  '古着屋': 'アパレル',
+  '衣料品': 'アパレル',
+  '衣料品店': 'アパレル',
+  '洋服': 'アパレル',
+  '洋服店': 'アパレル',
+  '服屋': 'アパレル',
+  '婦人服': 'アパレル',
+  '婦人服店': 'アパレル',
+  '紳士服': 'アパレル',
+  '紳士服店': 'アパレル',
+  '子供服': 'アパレル',
+  '子供服店': 'アパレル',
+  'ブティック': 'アパレル',
+  'ファッション': 'アパレル',
+  'ファッションアクセサリー': 'アパレル',
+  'ファッション アクセサリー': 'アパレル',
+  'アクセサリー': 'アパレル',
+  'アクセサリー店': 'アパレル',
+  '靴店': 'アパレル',
+  'かばん店': 'アパレル',
+  'バッグ販売店': 'アパレル',
+  'リサイクルショップ': 'アパレル',
+  'ヴィンテージショップ': 'アパレル',
+  '作業服': 'アパレル',
+  '作業服店': 'アパレル',
+  '呉服店': 'アパレル',
+  '着物販売店': 'アパレル',
+
+  'ペットサロン': 'ペットサロン',
+  'ペット サロン': 'ペットサロン',
+  'トリミング': 'ペットサロン',
+  'トリミングサロン': 'ペットサロン',
+  'ペットトリミング': 'ペットサロン',
+  '犬の美容室': 'ペットサロン',
+  'ドッグサロン': 'ペットサロン',
+  'ドッグ サロン': 'ペットサロン',
+  'グルーミング': 'ペットサロン',
+  'ペットグルーミング': 'ペットサロン',
+  'ペット美容室': 'ペットサロン',
+  'ペットショップ': 'ペットサロン',
+  'ペット用品店': 'ペットサロン',
+  'ペットホテル': 'ペットサロン'
 };
 
 const GENRE_ALLOWED_MAP = {
@@ -530,7 +575,39 @@ const GENRE_ALLOWED_MAP = {
   '蕎麦・うどん': ['蕎麦・うどん'],
   '中華': ['中華'],
   '韓国': ['韓国'],
-  '弁当': ['弁当', 'テイクアウト専門店']
+  '弁当': ['弁当', 'テイクアウト専門店'],
+  'アパレル': [
+    'アパレル', '古着屋', '古着', '衣料品店', '衣料品', '洋服店', '服屋',
+    '婦人服店', '紳士服店', '子供服店', 'ブティック',
+    'ファッションアクセサリー店', 'ファッション アクセサリー店', 'アクセサリー店',
+    '靴店', 'かばん店', 'バッグ販売店', 'リサイクルショップ',
+    'ヴィンテージショップ', '作業服店', '呉服店', '着物販売店'
+  ],
+  'ペットサロン': [
+    'ペットサロン', 'ペット サロン', 'トリミングサロン', 'トリミング',
+    'ペットトリミング', '犬の美容室', 'ドッグサロン', 'ドッグ サロン',
+    'グルーミング', 'ペットグルーミング', 'ペット美容室',
+    'ペットショップ', 'ペット用品店', 'ペットホテル'
+  ]
+};
+
+const GENRE_EXCLUDED_MAP = {
+  'アパレル': [
+    '薬局', '調剤薬局', 'ドラッグストア', 'ドラッグ ストア', '薬店',
+    '病院', '医院', 'クリニック', '歯科', '整骨院', '整体', '鍼灸',
+    '美容院', '美容室', 'ヘアサロン', '理容店', 'ネイルサロン',
+    'スーパー', 'スーパーマーケット', 'コンビニ', 'ホームセンター',
+    '家電', '電器店', '家具店', '寝具店', '雑貨店', '百貨店',
+    '不動産', '自動車', '中古車', 'バイク', 'ガソリンスタンド',
+    'カフェ', 'レストラン', '居酒屋', '食堂', 'ホテル'
+  ],
+  'ペットサロン': [
+    '美容院', '美容室', 'ヘアサロン', '理容店', '理容室', '床屋',
+    'ネイルサロン', 'まつげサロン', 'エステ', '整体', '整骨院',
+    '病院', '医院', 'クリニック', '歯科', '薬局', 'ドラッグストア',
+    'ペット霊園', '動物霊園', '火葬', 'ブリーダー', 'ドッグラン',
+    'カフェ', 'レストラン', '居酒屋', 'ホテル', '不動産'
+  ]
 };
 
 function normalizeGenre(sourceGenre, searchGenre = '') {
@@ -665,6 +742,26 @@ function extractRawGenreFromPanel() {
   return '';
 }
 
+function extractBusinessStatusFromPanel() {
+  const mainText = String(document.querySelector('[role="main"]')?.textContent || '')
+    .normalize('NFKC')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const closedPatterns = [
+    { status: 'closed_temporarily', label: '休業中', pattern: /休業中|一時休業|臨時休業|temporarily closed/i },
+    { status: 'closed_permanently', label: '閉業', pattern: /閉業|閉店|閉鎖|permanently closed/i }
+  ];
+
+  const hit = closedPatterns.find(({ pattern }) => pattern.test(mainText));
+  if (!hit) return { status: 'active', label: '' };
+  return { status: hit.status, label: hit.label };
+}
+
+function isClosedBusinessStatus(businessStatus) {
+  return ['closed_temporarily', 'closed_permanently'].includes(businessStatus?.status);
+}
+
 // =====================================================================
 // 詳細パネルスクレイピング (改善版: 動的待機・phoneStatus/hasWebsiteStatus付き)
 // =====================================================================
@@ -685,6 +782,7 @@ async function scrapeDetailPanel(placeUrl, cardName = '', searchGenre = '') {
 
   const googleGenre = extractRawGenreFromPanel();
   const genre = normalizeGenre(googleGenre, searchGenre);
+  const businessStatus = extractBusinessStatusFromPanel();
 
   // 営業時間トグルをクリック（動的待機）
   const hoursToggle = document.querySelector('button[data-item-id="oh"]');
@@ -769,6 +867,8 @@ async function scrapeDetailPanel(placeUrl, cardName = '', searchGenre = '') {
 
   return {
     name, genre, googleGenre, address, phone, phoneStatus,
+    businessStatus: businessStatus.status,
+    businessStatusLabel: businessStatus.label,
     hasWebsite, hasWebsiteStatus, rawHours, ...parsed
   };
 }
@@ -1259,6 +1359,9 @@ function matchesTargetGenres(detail, targetGenres) {
   if (!targetGenres || targetGenres.length === 0) return true;
   return targetGenres.some(g => {
     const normalizedTarget = normalizeGenre(g, g);
+    if (isExcludedGenreForTarget(detail, normalizedTarget)) {
+      return false;
+    }
     if (normalizedTarget === 'カフェ' && isCafeRelated(detail.googleGenre || detail.genre, detail.name)) {
       return true;
     }
@@ -1284,6 +1387,29 @@ function matchesTargetGenres(detail, targetGenres) {
       allowedValues.some(allowed => values.includes(allowed))
     );
   });
+}
+
+function isExcludedGenreForTarget(detail, targetGenre) {
+  const excludedValues = GENRE_EXCLUDED_MAP[targetGenre] || [];
+  if (!excludedValues.length) return false;
+
+  const text = [
+    detail.name,
+    detail.genre,
+    detail.googleGenre,
+    detail.sourceGenre
+  ].map(v => String(v || '').normalize('NFKC').toLowerCase()).join(' ');
+
+  return excludedValues.some(word => text.includes(String(word).normalize('NFKC').toLowerCase()));
+}
+
+function matchesStrictRequestedGenre(detail, requestedGenres) {
+  const strictTargets = (requestedGenres || [])
+    .map(g => normalizeGenre(g, g))
+    .filter(g => ['アパレル', 'ペットサロン'].includes(g));
+
+  if (!strictTargets.length) return true;
+  return strictTargets.some(target => matchesTargetGenres(detail, [target]));
 }
 
 // =====================================================================
@@ -1793,6 +1919,20 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
         }
 
         reportV3Log(`ジャンル変換: ${detail.googleGenre || '(未取得)'} → ${detail.genre || '(空欄)'} / 検索:${effectiveGenre || '-'}`);
+
+        if (isClosedBusinessStatus(detail)) {
+          speedStats.genreExcluded++;
+          logSkip(item, '休業・閉業除外', `${detail.name}|${detail.businessStatusLabel || detail.businessStatus}`);
+          queuedOrProcessingUrls.delete(url);
+          continue;
+        }
+
+        if (!matchesStrictRequestedGenre(detail, [outputGenre, effectiveGenre])) {
+          speedStats.genreExcluded++;
+          logSkip(item, '対象外ジャンル除外', `${detail.name}|${detail.genre}(${detail.googleGenre}) / 指定:${outputGenre || effectiveGenre}`);
+          queuedOrProcessingUrls.delete(url);
+          continue;
+        }
 
         // ジャンルフィルタ
         if (!matchesTargetGenres(detail, targetGenres)) {
