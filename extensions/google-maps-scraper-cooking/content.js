@@ -533,12 +533,69 @@ const GENRE_ALLOWED_MAP = {
   '弁当': ['弁当', 'テイクアウト専門店']
 };
 
-function normalizeGenre(sourceGenre, searchGenre = '') {
+// Googleマップ側から実ジャンルが取得できない/対応表に無い場合に、検索キーワードへ
+// フォールバックする前に店名から優先的に拾うジャンルキーワード。具体的な複合語ほど
+// 誤爆しにくいので先に判定させる。実データで「カフェ」検索時にラーメン屋・うどん屋等が
+// 検索語のままカフェに確定してしまう不具合を確認済みのための対応。
+const NAME_GENRE_PRIORITY_LIST = [
+  ['中華そば', 'ラーメン'],
+  ['油そば', 'ラーメン'],
+  ['まぜそば', 'ラーメン'],
+  ['つけ麺', 'ラーメン'],
+  ['拉麺', 'ラーメン'],
+  ['タンメン', 'ラーメン'],
+  ['ラーメン', 'ラーメン'],
+  ['讃岐', '蕎麦・うどん'],
+  ['うどん', '蕎麦・うどん'],
+  ['そば', '蕎麦・うどん'],
+  ['お好み焼き', 'お好み焼き'],
+  ['もんじゃ', 'お好み焼き'],
+  ['焼き鳥', '焼き鳥'],
+  ['焼鳥', '焼き鳥'],
+  ['焼き肉', '焼肉'],
+  ['焼肉', '焼肉'],
+  ['スナック', 'スナック'],
+  ['寿司', '寿司'],
+  ['鮨', '寿司'],
+  ['うなぎ', '和食'],
+  ['鰻', '和食'],
+  ['天ぷら', '和食'],
+  ['中華', '中華'],
+  ['餃子', '中華'],
+  ['韓国', '韓国'],
+  ['ハンバーガー', 'ハンバーガー'],
+  ['ベーカリー', 'パン屋'],
+  ['パン屋', 'パン屋'],
+  ['スイーツ', 'スイーツ'],
+  ['弁当', '弁当']
+];
+
+function findGenreFromStoreName(storeName) {
+  const nameText = String(storeName || '').normalize('NFKC');
+  if (!nameText) return '';
+  const hit = NAME_GENRE_PRIORITY_LIST.find(pair => nameText.includes(pair[0]));
+  return hit ? hit[1] : '';
+}
+
+function normalizeGenre(sourceGenre, searchGenre = '', storeName = '') {
+  const nameText = String(storeName || '').normalize('NFKC');
+
+  // ★最優先ルール: 店名に「居酒屋」と明記されている店は、Googleマップ側の
+  // カテゴリ判定が何であっても（Bar等に分類されていても）必ず「居酒屋」に
+  // 確定させる。他の広い受け皿ジャンルに絶対に紛れさせないための最優先チェック。
+  if (nameText.includes('居酒屋')) return '居酒屋';
+
   const raw = String(sourceGenre || '').normalize('NFKC').trim();
 
-  // Googleマップ側から実際のジャンルが全く取得できなかった場合のみ、
-  // 検索キーワードを最後の手段として使う。
-  if (!raw) return (searchGenre || '').normalize('NFKC').trim();
+  // Googleマップ側から実際のジャンルが全く取得できなかった場合、検索キーワードに
+  // 頼る前に、まず店名から具体的なジャンルが拾えないか試す（ラーメン屋・うどん屋・
+  // 農園等が検索語のジャンルにそのまま確定してしまう誤爆を防ぐ）。
+  if (!raw) {
+    if (isCafeRelated('', nameText)) return 'カフェ';
+    const nameGenre = findGenreFromStoreName(nameText);
+    if (nameGenre) return nameGenre;
+    return (searchGenre || '').normalize('NFKC').trim();
+  }
 
   if (GENRE_NORMALIZE_MAP[raw]) return GENRE_NORMALIZE_MAP[raw];
   for (const [key, normalized] of Object.entries(GENRE_NORMALIZE_MAP)) {
@@ -547,7 +604,11 @@ function normalizeGenre(sourceGenre, searchGenre = '') {
     }
   }
 
-  // 対応表に無いジャンルは、検索語で上書きせず実際に取得した表記をそのまま使う。
+  // 対応表に無いジャンルも、確定させる前に店名から具体的なジャンルを拾えないか試す。
+  const nameGenre = findGenreFromStoreName(nameText);
+  if (nameGenre) return nameGenre;
+
+  // それでも決まらなければ、検索語で上書きせず実際に取得した表記をそのまま使う。
   return raw;
 }
 
@@ -684,7 +745,7 @@ async function scrapeDetailPanel(placeUrl, cardName = '', searchGenre = '') {
   }
 
   const googleGenre = extractRawGenreFromPanel();
-  const genre = normalizeGenre(googleGenre, searchGenre);
+  const genre = normalizeGenre(googleGenre, searchGenre, name);
 
   // 営業時間トグルをクリック（動的待機）
   const hoursToggle = document.querySelector('button[data-item-id="oh"]');
@@ -1267,7 +1328,7 @@ function matchesTargetGenres(detail, targetGenres) {
       normalizedTarget,
       detail.genre,
       detail.googleGenre,
-      normalizeGenre(detail.googleGenre, detail.searchGenre || '')
+      normalizeGenre(detail.googleGenre, detail.searchGenre || '', detail.name)
     ].map(v => String(v || '').normalize('NFKC').toLowerCase()).filter(Boolean);
 
     const targetValues = [g, normalizedTarget]

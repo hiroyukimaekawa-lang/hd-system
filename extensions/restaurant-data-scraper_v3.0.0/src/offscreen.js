@@ -951,7 +951,7 @@ async function fetchDetailsBatch(task, tabId, storeUrls, siteType, listUrl, page
 
           const finalDetail = {
             name: detail.name,
-            genre: detail.genre,
+            genre: resolveFinalGenre(detail.genre, detail.name),
             sourceGenre: detail.genre,
             prefecture: parsedAddr.prefecture,
             city: parsedAddr.city,
@@ -1166,11 +1166,12 @@ async function runCrawlTask(tabId) {
     // 人気ジャンル一括取得のサブタスクの場合、詳細ページ側のジャンル欄の値に関わらず
     // 巡回中のカテゴリ名（forceGenre）でジャンルを統一してからダウンロードする。
     // これをしないと、店ごとに違う複合ジャンル表記（例:「カフェ、カレー、ラーメン」）の
-    // 数だけCSVが分裂してしまう。
+    // 数だけCSVが分裂してしまう。ただし店名に「居酒屋」と明記されている店だけは、
+    // 巡回中のカテゴリが何であっても居酒屋を優先する（最優先ルール）。
     if (task.forceGenre) {
       task.results = task.results.map(r => ({
         ...r,
-        genre: task.forceGenre,
+        genre: applyIzakayaNamePriority(task.forceGenre, r.name),
         source_genre: task.forceGenre
       }));
     }
@@ -1433,6 +1434,87 @@ const TABELOG_GENRE_TO_FINAL_GENRE = {
 
 function mapToFinalGenre(rawCategoryName) {
   return TABELOG_GENRE_TO_FINAL_GENRE[rawCategoryName] || rawCategoryName;
+}
+
+// GAS側のHD_TARGET_GENRESと完全一致させること（20種類）
+const FINAL_GENRE_LIST = [
+  'カフェ', '居酒屋', 'スナック', 'Bar', 'パン屋', '焼き鳥', 'お好み焼き', '焼肉', 'スイーツ', '中華',
+  'ハンバーガー', '蕎麦・うどん', '寿司', '和食', '洋食', '定食・食堂', '弁当', '韓国', 'テイクアウト専門店', 'ラーメン'
+];
+function isValidFinalGenre(genre) {
+  return FINAL_GENRE_LIST.indexOf(String(genre || '').trim()) !== -1;
+}
+
+// 生ジャンルから統一ジャンルが決まらなかった場合に店名から優先的に拾うジャンルキーワード。
+// 具体的な複合語ほど誤爆しにくいので先に判定させる。実データで「カフェ」検索時に
+// ラーメン屋・うどん屋等が検索語のままカフェに確定してしまう不具合を確認済みのための対応。
+// GAS/google-maps-scraper-cookingと同じ内容にしておくこと。
+const NAME_GENRE_PRIORITY_LIST = [
+  ['中華そば', 'ラーメン'],
+  ['油そば', 'ラーメン'],
+  ['まぜそば', 'ラーメン'],
+  ['つけ麺', 'ラーメン'],
+  ['拉麺', 'ラーメン'],
+  ['タンメン', 'ラーメン'],
+  ['ラーメン', 'ラーメン'],
+  ['讃岐', '蕎麦・うどん'],
+  ['うどん', '蕎麦・うどん'],
+  ['そば', '蕎麦・うどん'],
+  ['お好み焼き', 'お好み焼き'],
+  ['もんじゃ', 'お好み焼き'],
+  ['焼き鳥', '焼き鳥'],
+  ['焼鳥', '焼き鳥'],
+  ['焼き肉', '焼肉'],
+  ['焼肉', '焼肉'],
+  ['スナック', 'スナック'],
+  ['寿司', '寿司'],
+  ['鮨', '寿司'],
+  ['うなぎ', '和食'],
+  ['鰻', '和食'],
+  ['天ぷら', '和食'],
+  ['中華', '中華'],
+  ['餃子', '中華'],
+  ['韓国', '韓国'],
+  ['ハンバーガー', 'ハンバーガー'],
+  ['ベーカリー', 'パン屋'],
+  ['パン屋', 'パン屋'],
+  ['カフェ', 'カフェ'],
+  ['喫茶', 'カフェ'],
+  ['珈琲', 'カフェ'],
+  ['スイーツ', 'スイーツ'],
+  ['弁当', '弁当']
+];
+
+function findGenreFromStoreName(storeName) {
+  const nameText = String(storeName || '').normalize('NFKC');
+  if (!nameText) return '';
+  const hit = NAME_GENRE_PRIORITY_LIST.find(pair => nameText.includes(pair[0]));
+  return hit ? hit[1] : '';
+}
+
+// ★最優先ルール: 店名に「居酒屋」と明記されている店は、食べログ/ホットペッパー側の
+// カテゴリ判定が何であっても（Bar・和食等に分類されていても）必ず「居酒屋」に
+// 確定させる。他の広い受け皿ジャンルに絶対に紛れさせないための最優先チェック。
+function applyIzakayaNamePriority(genre, storeName) {
+  if (String(storeName || '').normalize('NFKC').includes('居酒屋')) return '居酒屋';
+  return genre;
+}
+
+// 生ジャンル（食べログ/ホットペッパーの取得値）と店名から、最終的な統一ジャンルを
+// 決定する。①店名に「居酒屋」があれば最優先で居酒屋、②生ジャンルを正規化マップで
+// 変換、③それでも有効な統一ジャンルにならなければ店名から具体的なジャンルを拾う、
+// という優先順位。通常検索モードでは従来どこにも正規化がかかっていなかったため、
+// 生ジャンルがそのままCSVへ出力されていた点も合わせて修正。
+function resolveFinalGenre(rawGenre, storeName) {
+  const nameText = String(storeName || '').normalize('NFKC');
+  if (nameText.includes('居酒屋')) return '居酒屋';
+
+  let mapped = mapToFinalGenre(String(rawGenre || '').normalize('NFKC').trim());
+  if (!isValidFinalGenre(mapped)) {
+    const nameGenre = findGenreFromStoreName(nameText);
+    if (nameGenre) mapped = nameGenre;
+  }
+  return mapped;
 }
 
 // 現在の一覧URL（例: https://tabelog.com/chiba/C12234/rstLst/...）から
