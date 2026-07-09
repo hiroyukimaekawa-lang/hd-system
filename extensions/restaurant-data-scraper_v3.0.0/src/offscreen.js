@@ -1163,15 +1163,19 @@ async function runCrawlTask(tabId) {
     task.running = false;
     task.results = task.results.filter(Boolean);
 
-    // 人気ジャンル一括取得のサブタスクの場合、詳細ページ側のジャンル欄の値に関わらず
-    // 巡回中のカテゴリ名（forceGenre）でジャンルを統一してからダウンロードする。
-    // これをしないと、店ごとに違う複合ジャンル表記（例:「カフェ、カレー、ラーメン」）の
-    // 数だけCSVが分裂してしまう。ただし店名に「居酒屋」と明記されている店だけは、
-    // 巡回中のカテゴリが何であっても居酒屋を優先する（最優先ルール）。
+    // ★修正: 人気ジャンル一括取得のサブタスクでは、従来は詳細ページ側のジャンルに
+    // 関わらず巡回中のカテゴリ名（forceGenre）を無条件採用していたが、これだと
+    // 「和食」ページ経由で見つかった寿司屋・焼き鳥屋・ラーメン屋・カフェ・バー等が
+    // 実態と無関係に全件「和食」になってしまう不具合があった（木更津市の和食巡回
+    // 296件が全件「和食」になっていたケースで実証済み）。
+    // r.genre は個別取得時点で既に resolveFinalGenre() を通っており
+    // （店名の居酒屋最優先ルール・詳細ページ自身のジャンル・店名キーワードの順で
+    // 判定済み）、それが有効な統一ジャンルであればそちらを優先し、判定できなかった
+    // 場合のみ巡回中のカテゴリ（forceGenre）を最後の手段として使う。
     if (task.forceGenre) {
       task.results = task.results.map(r => ({
         ...r,
-        genre: applyIzakayaNamePriority(task.forceGenre, r.name),
+        genre: isValidFinalGenre(r.genre) ? r.genre : task.forceGenre,
         source_genre: task.forceGenre
       }));
     }
@@ -1392,8 +1396,8 @@ const TABELOG_POPULAR_GENRE_SLUGS = [
 // GAS側の HD_GENRE_MAP / HD_TARGET_GENRES と同じ対応関係にしておくこと。
 // （例: うなぎ・天ぷら・とんかつ・沖縄料理・日本料理・海鮮＝すべて「和食」に集約、
 // 　　  ホルモン＝「焼肉」に集約、餃子＝「中華」に集約 など）
-// 「料理旅館」「ビュッフェ・バイキング」はGAS側と同様、対応する統一ジャンルが
-// ないため意図的に未マッピング（クロール中のカテゴリ名のまま出力＝要確認扱い）。
+// 「料理旅館」「ビュッフェ・バイキング」は対応する統一ジャンルが無いため、
+// GAS側のHD_GENRE_MAPと同様に「和食」へ集約する（意図的な集約であり未マッピングではない）。
 const TABELOG_GENRE_TO_FINAL_GENRE = {
   '和食': '和食',
   '日本料理': '和食',
@@ -1429,11 +1433,64 @@ const TABELOG_GENRE_TO_FINAL_GENRE = {
   'ケーキ': 'スイーツ',
   '食堂': '定食・食堂',
   '料理旅館': '和食',
-  'ビュッフェ・バイキング': '和食'
+  'ビュッフェ・バイキング': '和食',
+
+  // ↓ここから: 詳細ページ側の自由記述ジャンルタグ（34カテゴリの枠外）で
+  // 実データ上よく出現する表記。人気ジャンル巡回でforceGenreに頼らず
+  // 詳細ページ自身のジャンルから統一ジャンルを決められるようにするための追加
+  // （例: 木更津市「和食」巡回結果296件が全件「和食」になり、実際は寿司・焼き鳥・
+  // ラーメン・カフェ・バー等が多数混在していた不具合の対応）。
+  '海鮮': '和食',
+  '海鮮丼': '和食',
+  'しゃぶしゃぶ': '和食',
+  'すき焼き': '和食',
+  '釜飯': '和食',
+  'どじょう': '和食',
+  'おでん': '和食',
+  'かき': '和食',
+  'シーフード': '和食',
+  '韓国料理': '韓国',
+  '韓国': '韓国',
+  'お好み焼き': 'お好み焼き',
+  'もんじゃ焼き': 'お好み焼き',
+  '焼きそば': 'お好み焼き',
+  'たこ焼き': 'お好み焼き',
+  '鳥料理': '焼き鳥',
+  '串焼き': '焼き鳥',
+  'もつ焼き': '焼き鳥',
+  '回転寿司': '寿司',
+  '弁当': '弁当',
+  'からあげ': 'テイクアウト専門店',
+  'おにぎり': 'テイクアウト専門店',
+  '牛丼': '定食・食堂',
+  '豚丼': '定食・食堂',
+  'かつ丼': '定食・食堂',
+  '親子丼': '定食・食堂',
+  '丼': '定食・食堂',
+  'ちゃんぽん': 'ラーメン',
+  '牛タン': '焼肉',
+  'ビュッフェ': '和食',
+  'バー': 'Bar',
+  'ダイニングバー': 'Bar',
+  '飲茶・点心': '中華',
+  '台湾料理': '中華',
+  'ろばた焼き': '居酒屋',
+  'ファミレス': '洋食'
 };
 
 function mapToFinalGenre(rawCategoryName) {
-  return TABELOG_GENRE_TO_FINAL_GENRE[rawCategoryName] || rawCategoryName;
+  const raw = String(rawCategoryName || '').trim();
+  if (TABELOG_GENRE_TO_FINAL_GENRE[raw]) return TABELOG_GENRE_TO_FINAL_GENRE[raw];
+
+  // 詳細ページ側のジャンルは「カフェ、カレー、ラーメン」のようにカンマ/読点区切りの
+  // 複合タグで来ることが多い。食べログは代表的なタグを先頭に並べる傾向があるため、
+  // 先頭から順に対応表に一致する要素を採用する。
+  const parts = raw.split(/[、,]/).map(s => s.trim()).filter(Boolean);
+  for (const part of parts) {
+    if (TABELOG_GENRE_TO_FINAL_GENRE[part]) return TABELOG_GENRE_TO_FINAL_GENRE[part];
+  }
+
+  return raw;
 }
 
 // GAS側のHD_TARGET_GENRESと完全一致させること（20種類）
@@ -1492,13 +1549,6 @@ function findGenreFromStoreName(storeName) {
   return hit ? hit[1] : '';
 }
 
-// ★最優先ルール: 店名に「居酒屋」と明記されている店は、食べログ/ホットペッパー側の
-// カテゴリ判定が何であっても（Bar・和食等に分類されていても）必ず「居酒屋」に
-// 確定させる。他の広い受け皿ジャンルに絶対に紛れさせないための最優先チェック。
-function applyIzakayaNamePriority(genre, storeName) {
-  if (String(storeName || '').normalize('NFKC').includes('居酒屋')) return '居酒屋';
-  return genre;
-}
 
 // 生ジャンル（食べログ/ホットペッパーの取得値）と店名から、最終的な統一ジャンルを
 // 決定する。①店名に「居酒屋」があれば最優先で居酒屋、②生ジャンルを正規化マップで
