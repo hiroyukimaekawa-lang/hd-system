@@ -1559,6 +1559,14 @@ function resolveFinalGenre(rawGenre, storeName) {
   const nameText = String(storeName || '').normalize('NFKC');
   if (nameText.includes('居酒屋')) return '居酒屋';
 
+  // ★最優先ルール: 店名にカフェ関連キーワード（カフェ/coffee/珈琲/喫茶等）が
+  // 含まれる場合も、食べログ/ホットペッパー側のジャンル抽出結果に関わらず必ず
+  // 「カフェ」に確定させる。Google Mapsスクレイパー側で同種の抽出不良
+  // （検索:カフェでヒットした店が無関係なジャンルに化ける不具合）を確認済みのため、
+  // 食べログ/ホットペッパー側も店名優先で統一しておく。
+  const cafeKeywords = ['カフェ', 'cafe', 'Cafe', 'CAFE', '喫茶', '珈琲', 'コーヒー', 'coffee', 'Coffee', 'COFFEE'];
+  if (cafeKeywords.some(keyword => nameText.includes(keyword))) return 'カフェ';
+
   let mapped = mapToFinalGenre(String(rawGenre || '').normalize('NFKC').trim());
   if (!isValidFinalGenre(mapped)) {
     const nameGenre = findGenreFromStoreName(nameText);

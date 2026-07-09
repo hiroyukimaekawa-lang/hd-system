@@ -585,13 +585,21 @@ function normalizeGenre(sourceGenre, searchGenre = '', storeName = '') {
   // 確定させる。他の広い受け皿ジャンルに絶対に紛れさせないための最優先チェック。
   if (nameText.includes('居酒屋')) return '居酒屋';
 
+  // ★最優先ルール: 店名にカフェ関連キーワード（カフェ/coffee/珈琲/喫茶等）が
+  // 含まれる場合も、Googleマップ側のジャンル抽出結果に関わらず必ず「カフェ」に
+  // 確定させる。実データで「検索:カフェ」でヒットした店が、抽出不良により
+  // 取得元ジャンルが「洋食」等の無関係な値になり、店名が明らかにカフェ
+  // （例:「MIFUNEYAMA COFFEE」「cafe Bohemian」等）でも洋食に混入する不具合を
+  // 88件規模で確認済み。居酒屋と同様、店名の方が抽出結果より信頼できるため
+  // 最優先で判定する。
+  if (isCafeRelated('', nameText)) return 'カフェ';
+
   const raw = String(sourceGenre || '').normalize('NFKC').trim();
 
   // Googleマップ側から実際のジャンルが全く取得できなかった場合、検索キーワードに
   // 頼る前に、まず店名から具体的なジャンルが拾えないか試す（ラーメン屋・うどん屋・
   // 農園等が検索語のジャンルにそのまま確定してしまう誤爆を防ぐ）。
   if (!raw) {
-    if (isCafeRelated('', nameText)) return 'カフェ';
     const nameGenre = findGenreFromStoreName(nameText);
     if (nameGenre) return nameGenre;
     return (searchGenre || '').normalize('NFKC').trim();

@@ -997,7 +997,16 @@ function fixKnownChainMasterGaps() {
     ["星乃珈琲店", "星乃珈琲店", "飲食", true, "未登録だったため新規追加"],
     ["マクドナルド", "マクドナルド", "飲食", true, "カタカナ表記対策（英語表記McDonald'sのみでは実店名に一致しないため追加）"],
     ["ドミノ・ピザ", "ドミノピザ", "飲食", true, "未登録だったため新規追加"],
-    ["ドミノ・ピザ", "ドミノ・ピザ", "飲食", true, "中黒あり表記対策"]
+    ["ドミノ・ピザ", "ドミノ・ピザ", "飲食", true, "中黒あり表記対策"],
+    ["スシロー", "スシロー", "飲食", true, "回転寿司チェーン。木更津市データで未除外を確認したため追加"],
+    ["はま寿司", "はま寿司", "飲食", true, "回転寿司チェーン。木更津市データで未除外を確認したため追加"],
+    ["くら寿司", "くら寿司", "飲食", true, "回転寿司チェーン（「無添くら寿司」表記にも部分一致）。木更津市データで未除外を確認したため追加"],
+    ["すし銚子丸", "銚子丸", "飲食", true, "回転寿司チェーン。木更津市データで未除外を確認したため追加"],
+    ["元気寿司", "元気寿司", "飲食", true, "回転寿司チェーン。表記ゆれ対策のため予防的に追加"],
+    ["回転寿司 やまと", "回転寿司 やまと", "飲食", true, "回転寿司チェーン。「やまと」単独だと一般的すぎて誤爆するため店名全体をキーワードに設定"],
+    ["モスバーガー", "モスバーガー", "飲食", true, "ハンバーガーチェーン。木更津市データで未除外を確認したため追加"],
+    ["バーガーキング", "BURGER KING", "飲食", true, "ハンバーガーチェーン（英語表記）。木更津市データで未除外を確認したため追加"],
+    ["シャトレーゼ", "シャトレーゼ", "飲食", true, "洋菓子チェーン。木更津市データで未除外を確認したため追加"]
   ];
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1156,10 +1165,17 @@ function normalizeSystemGenre(genre, searchGenre, sourceGenre, storeName) {
   // （HD_GENRE_MAPによるマッピングより先に判定する）。
   if (textValue(storeName).indexOf("居酒屋") !== -1) return "居酒屋";
 
+  // ★最優先ルール: 店名にカフェ関連キーワード（カフェ/coffee/珈琲/喫茶等）が
+  // 含まれる場合も、Google側の生ジャンル抽出結果に関わらず必ず「カフェ」に確定
+  // させる。実データで「検索:カフェ」でヒットした店が、抽出不良により
+  // 取得元ジャンルが「洋食」等の無関係な値になり、店名が明らかにカフェ
+  // （例:「MIFUNEYAMA COFFEE」「cafe Bohemian」等）でも洋食タブに混入する
+  // 不具合を88件規模で確認済み。居酒屋と同様、店名の方が生ジャンルより
+  // 信頼できるため最優先で判定する。
+  if (CAFE_KEYWORDS.some(keyword => textValue(storeName).indexOf(keyword) !== -1)) return "カフェ";
+
   const rawGenre = textValue(genre);
   let mappedGenre = HD_GENRE_MAP[rawGenre] || rawGenre;
-  const haystack = [sourceGenre, storeName, rawGenre].map(textValue).join(" ");
-  if (textValue(searchGenre) === "カフェ" && CAFE_KEYWORDS.some(keyword => haystack.indexOf(keyword) !== -1)) return "カフェ";
   if (textValue(searchGenre) === "喫茶店") return "カフェ";
 
   // ★修正: Googleマップ側のカテゴリ体系には「居酒屋」の粒度が無いことが多く、
@@ -1179,17 +1195,14 @@ function normalizeSystemGenre(genre, searchGenre, sourceGenre, storeName) {
   }
 
   // ★修正: 生ジャンルからも決まらなかった場合、検索ジャンルへフォールバックする前に
-  // 店名から具体的なジャンルを優先して拾う。これが無いと、例えば「カフェ」で検索して
-  // ヒットしたラーメン屋・うどん屋・和菓子屋等が、実際の業態と無関係に検索語（カフェ）
-  // でそのまま確定してしまう（実データで「総のうどん・そば」「ラーメンショップ椿」等が
-  // 04_SALES_カフェに混入する不具合を確認済み）。
+  // 店名から具体的なジャンルを優先して拾う（カフェは上の最優先ルールで判定済みのため
+  // ここでは対象外）。これが無いと、例えば「カフェ」で検索してヒットしたラーメン屋・
+  // うどん屋・和菓子屋等が、実際の業態と無関係に検索語（カフェ）でそのまま確定して
+  // しまう（実データで「総のうどん・そば」「ラーメンショップ椿」等が04_SALES_カフェに
+  // 混入する不具合を確認済み）。
   if (!isValidHdGenre(mappedGenre)) {
-    if (CAFE_KEYWORDS.some(keyword => textValue(storeName).indexOf(keyword) !== -1)) {
-      mappedGenre = "カフェ";
-    } else {
-      const nameGenre = findGenreFromStoreName(storeName);
-      if (nameGenre) mappedGenre = nameGenre;
-    }
+    const nameGenre = findGenreFromStoreName(storeName);
+    if (nameGenre) mappedGenre = nameGenre;
   }
 
   // 店舗自身のジャンル表記からも店名からも有効な統一ジャンルを決められなかった場合、
