@@ -411,6 +411,7 @@ const GENRE_NORMALIZE_MAP = {
 
   'スナック': 'スナック',
   'ラウンジ': 'スナック',
+  '軽食店': 'スナック',
 
   'バー': 'Bar',
   'Bar': 'Bar',
@@ -541,6 +542,8 @@ const NAME_GENRE_PRIORITY_LIST = [
   ['拉麺', 'ラーメン'],
   ['タンメン', 'ラーメン'],
   ['ラーメン', 'ラーメン'],
+  ['麺屋', 'ラーメン'],
+  ['麺や', 'ラーメン'],
   ['讃岐', '蕎麦・うどん'],
   ['うどん', '蕎麦・うどん'],
   ['そば', '蕎麦・うどん'],
@@ -590,14 +593,20 @@ function normalizeGenre(sourceGenre, searchGenre = '', storeName = '') {
   // 最優先で判定する。
   if (isCafeRelated('', nameText)) return 'カフェ';
 
+  // ★最優先ルール: 店名にラーメン・蕎麦うどん・寿司・焼肉等の具体的なジャンル語が
+  // 含まれる場合も、Googleマップ側の抽出結果が既に「有効な別ジャンル」に見えていても
+  // 店名を優先する。実データで「横浜ラーメン寺田家」「竹岡式ラーメンたか木屋白井店」等、
+  // 店名に「ラーメン」と明記された店が、抽出不良で「カフェ」等の別の有効なジャンルに
+  // なってしまい、raw未取得時のみ店名を見る従来ロジックでは拾えないケースを確認した
+  // ため、居酒屋・カフェと同様に無条件の最優先チェックへ格上げする。
+  const nameGenrePriority = findGenreFromStoreName(nameText);
+  if (nameGenrePriority) return nameGenrePriority;
+
   const raw = String(sourceGenre || '').normalize('NFKC').trim();
 
-  // Googleマップ側から実際のジャンルが全く取得できなかった場合、検索キーワードに
-  // 頼る前に、まず店名から具体的なジャンルが拾えないか試す（ラーメン屋・うどん屋・
-  // 農園等が検索語のジャンルにそのまま確定してしまう誤爆を防ぐ）。
+  // Googleマップ側から実際のジャンルが全く取得できなかった場合は検索語を使う
+  // （店名からの判定は上の最優先ルールで既に試行済み）。
   if (!raw) {
-    const nameGenre = findGenreFromStoreName(nameText);
-    if (nameGenre) return nameGenre;
     return (searchGenre || '').normalize('NFKC').trim();
   }
 
@@ -607,10 +616,6 @@ function normalizeGenre(sourceGenre, searchGenre = '', storeName = '') {
       return normalized;
     }
   }
-
-  // 対応表に無いジャンルも、確定させる前に店名から具体的なジャンルを拾えないか試す。
-  const nameGenre = findGenreFromStoreName(nameText);
-  if (nameGenre) return nameGenre;
 
   // それでも決まらなければ、検索語で上書きせず実際に取得した表記をそのまま使う。
   return raw;

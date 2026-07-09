@@ -1514,6 +1514,8 @@ const NAME_GENRE_PRIORITY_LIST = [
   ['拉麺', 'ラーメン'],
   ['タンメン', 'ラーメン'],
   ['ラーメン', 'ラーメン'],
+  ['麺屋', 'ラーメン'],
+  ['麺や', 'ラーメン'],
   ['讃岐', '蕎麦・うどん'],
   ['うどん', '蕎麦・うどん'],
   ['そば', '蕎麦・うどん'],
@@ -1567,11 +1569,14 @@ function resolveFinalGenre(rawGenre, storeName) {
   const cafeKeywords = ['カフェ', 'cafe', 'Cafe', 'CAFE', '喫茶', '珈琲', 'コーヒー', 'coffee', 'Coffee', 'COFFEE'];
   if (cafeKeywords.some(keyword => nameText.includes(keyword))) return 'カフェ';
 
-  let mapped = mapToFinalGenre(String(rawGenre || '').normalize('NFKC').trim());
-  if (!isValidFinalGenre(mapped)) {
-    const nameGenre = findGenreFromStoreName(nameText);
-    if (nameGenre) mapped = nameGenre;
-  }
+  // ★最優先ルール: 店名にラーメン・蕎麦うどん・寿司・焼肉等の具体的なジャンル語が
+  // 含まれる場合も、生ジャンルが既に「有効な別ジャンル」に見えていても店名を優先する。
+  // 居酒屋・カフェと同様、店名の方が抽出結果より信頼できるため最優先で判定する
+  // （Google Mapsスクレイパー側で確認した同種の不具合への対応と統一）。
+  const nameGenrePriority = findGenreFromStoreName(nameText);
+  if (nameGenrePriority) return nameGenrePriority;
+
+  const mapped = mapToFinalGenre(String(rawGenre || '').normalize('NFKC').trim());
   return mapped;
 }
 
