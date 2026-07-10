@@ -1548,6 +1548,10 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
   // 詳細パネルを閉じない方式のため、前回パネル情報を追跡
   let prevPanelName = '';
   let prevPanelUrl = window.location.href;
+  // 直前に確定保存したレコード（店名が違うのに住所・電話番号が完全一致する
+  // ケースを検知するための最終防衛ライン。fieldsReadyのチェックをすり抜けて
+  // 前店舗のデータが混入した場合の保険）
+  let lastPushedRecord = null;
 
   const cardQueue = [];
   const precollectedItems = collectedResult.items;
@@ -1814,9 +1818,15 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
           addTiming(speedStats, 'panelWait', performance.now() - fieldWaitStarted);
 
           const panelDidNotChange = changed.name === previousPanelName && changed.url === previousPanelUrl;
-          if (panelDidNotChange) {
-            // 切り替わらなかった: フォールバックで閉じてから開く
-            reportV3Log(`パネル切り替わらず フォールバック: ${cardName || url}`);
+          // 住所・電話番号の更新が確認できなかった場合（fieldsReady=false）も、
+          // 以前は「取得は続行」として前店舗のデータをそのまま使ってしまっていた。
+          // これが「別店舗の電話番号・住所が混入する」バグの主因だったため、
+          // パネル名/URLが変わらなかった場合と同じフォールバック（閉じて開き直す）
+          // を必ず実行するように変更。それでも確認できなければスキップする。
+          if (panelDidNotChange || !fieldsReady) {
+            reportV3Log(panelDidNotChange
+              ? `パネル切り替わらず フォールバック: ${cardName || url}`
+              : `詳細欄更新未確認 フォールバック: ${cardName || url}`);
             const backMs0 = performance.now();
             await closeDetailPanel();
             addTiming(speedStats, 'back', performance.now() - backMs0);
@@ -1839,8 +1849,6 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
               logSkip(item, '詳細取得失敗(フォールバック)', cardName || url);
               continue;
             }
-          } else if (!fieldsReady) {
-            reportV3Log(`詳細欄更新待ちタイムアウト: ${cardName || url}（取得は続行）`);
           }
         } else {
           // 詳細パネルが閉じている: 通常通りクリック
@@ -1869,8 +1877,14 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
             previousPhone: previousPanelPhone
           }, 3000);
           addTiming(speedStats, 'panelWait', performance.now() - fieldWaitStarted);
+          // 住所・電話番号の更新が確認できない場合、以前は「取得は続行」として
+          // 未確認のまま(=前の内容の可能性がある)データを使ってしまっていた。
+          // 別店舗のデータ混入を防ぐため、確認できなければこの店舗はスキップする
           if (!fieldsReady) {
-            reportV3Log(`詳細欄更新待ちタイムアウト: ${cardName || url}（取得は続行）`);
+            speedStats.failed++;
+            queuedOrProcessingUrls.delete(url);
+            logSkip(item, '詳細欄更新未確認', cardName || url);
+            continue;
           }
         }
 
@@ -1958,10 +1972,26 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
           scrollBatchNo: item.scrollBatch
         };
 
+        // 最終防衛ライン: 店名が違うのに住所・電話番号が直前レコードと
+        // 完全一致している場合、パネルが更新されないまま前店舗のデータを
+        // 読んでしまった疑いが強いため、このレコードは保存せずスキップする
+        // （fieldsReadyのチェックをすり抜けた場合の保険）
+        const suspectedStaleCopy = lastPushedRecord
+          && record.name !== lastPushedRecord.name
+          && record.address && record.address === lastPushedRecord.address
+          && record.phone && record.phone === lastPushedRecord.phone;
+        if (suspectedStaleCopy) {
+          speedStats.failed++;
+          queuedOrProcessingUrls.delete(url);
+          logSkip(item, '前店舗とデータ完全一致(混入疑い)', `${record.name} / ${record.address} / ${record.phone}`);
+          continue;
+        }
+
         totalProcessed++;
         speedStats.detailFetched++;
         markRecordQuality(speedStats, record);
         lastProcessedItem = item;
+        lastPushedRecord = record;
 
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
         const perItem = totalProcessed > 0 ? (elapsed / totalProcessed).toFixed(1) : '-';
