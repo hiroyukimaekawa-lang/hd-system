@@ -54,10 +54,23 @@ function getCurrentPanelName() {
 }
 
 function getCurrentPanelAddress() {
-  const addrBtn = document.querySelector('button[data-item-id="address"]');
+  // [role="main"] でスコープしないと、検索結果一覧カードや「関連する検索」
+  // カルーセルなど、詳細パネル以外の場所にある同じdata-item-id要素を
+  // 誤って拾ってしまう（住所・電話番号の店舗取り違えの原因になる）
+  const addrBtn = document.querySelector('[role="main"] button[data-item-id="address"]');
   if (!addrBtn) return '';
   const raw = addrBtn.getAttribute('aria-label') || addrBtn.textContent.trim();
   return raw.replace(/^住所[：:]\s*/, '').trim();
+}
+
+// 現在パネルに表示されている電話番号を取得（前店舗の電話ボタンが
+// まだDOMに残っている「取り残し」状態を検知するための基準値として使用）
+function getCurrentPanelPhone() {
+  const phoneBtn = document.querySelector('[role="main"] button[data-item-id^="phone:tel:"]');
+  if (!phoneBtn) return '';
+  const itemId = phoneBtn.getAttribute('data-item-id') || '';
+  const raw = itemId.replace('phone:tel:', '').trim() || phoneBtn.textContent.trim();
+  return normalizePhoneNumber(raw);
 }
 
 function normalizePlaceName(name) {
@@ -81,18 +94,25 @@ async function waitForPanelFieldsReady(options = {}, timeoutMs = 5500) {
     expectedUrl = '',
     previousName = '',
     previousUrl = '',
-    previousAddress = ''
+    previousAddress = '',
+    previousPhone = ''
   } = options;
   const expectedNames = [expectedName, extractNameFromUrl(expectedUrl)].filter(Boolean);
   const deadline = Date.now() + timeoutMs;
   let identityReadyAt = 0;
   let lastAddress = '';
   let addressStableAt = 0;
+  // 電話番号欄は住所欄より遅れて非同期読み込みされることがあり、
+  // 前の店舗の電話ボタンがDOMに残ったまま読み取ってしまう（取り違え）
+  // 原因になるため、住所と同様に安定するまで待つ
+  let lastPhone = null;
+  let phoneStableAt = 0;
 
   while (Date.now() < deadline) {
     const currentName = getCurrentPanelName();
     const currentUrl = window.location.href;
     const currentAddress = getCurrentPanelAddress();
+    const currentPhone = getCurrentPanelPhone();
     const usableName = currentName && currentName !== '結果';
     const identityChanged =
       (usableName && currentName !== previousName) ||
@@ -105,6 +125,15 @@ async function waitForPanelFieldsReady(options = {}, timeoutMs = 5500) {
     if (panelLooksUsable && (identityChanged || nameMatches)) {
       if (!identityReadyAt) identityReadyAt = Date.now();
 
+      if (currentPhone !== lastPhone) {
+        lastPhone = currentPhone;
+        phoneStableAt = Date.now();
+      }
+      const phoneChanged = !previousPhone || currentPhone !== previousPhone;
+      const phoneStable = Date.now() - phoneStableAt >= 240;
+      const waitedLongEnoughForSamePhone = Date.now() - identityReadyAt >= 900;
+      const phoneReady = phoneStable && (phoneChanged || waitedLongEnoughForSamePhone);
+
       if (currentAddress) {
         if (currentAddress !== lastAddress) {
           lastAddress = currentAddress;
@@ -113,8 +142,8 @@ async function waitForPanelFieldsReady(options = {}, timeoutMs = 5500) {
         const addressChanged = !previousAddress || currentAddress !== previousAddress;
         const addressStable = Date.now() - addressStableAt >= 240;
         const waitedLongEnoughForSameAddress = Date.now() - identityReadyAt >= 900;
-        if (addressStable && (addressChanged || waitedLongEnoughForSameAddress)) return true;
-      } else if (Date.now() - identityReadyAt >= 700) {
+        if (addressStable && (addressChanged || waitedLongEnoughForSameAddress) && phoneReady) return true;
+      } else if (Date.now() - identityReadyAt >= 700 && phoneReady) {
         return true;
       }
     }
@@ -231,7 +260,7 @@ function matchesTargetArea(address, targetPrefecture, targetCity) {
 // 詳細パネル判定
 // =====================================================================
 function isDetailPanelOpen() {
-  return !!document.querySelector('button[data-item-id="address"]');
+  return !!document.querySelector('[role="main"] button[data-item-id="address"]');
 }
 
 async function waitForDetailPanel(timeoutMs = 5000) {
@@ -757,23 +786,28 @@ async function scrapeDetailPanel(placeUrl, cardName = '', searchGenre = '') {
   const genre = normalizeGenre(googleGenre, searchGenre, name);
 
   // 営業時間トグルをクリック（動的待機）
-  const hoursToggle = document.querySelector('button[data-item-id="oh"]');
+  const hoursToggle = document.querySelector('[role="main"] button[data-item-id="oh"]');
   if (hoursToggle && hoursToggle.getAttribute('aria-expanded') !== 'true') {
     hoursToggle.click();
   }
 
   // 住所（動的待機）
+  // [role="main"] でスコープ: 検索結果一覧やカルーセルにある別店舗の
+  // 同名data-item-id要素を拾ってしまう取り違えを防ぐ
   let address = '';
-  const addrBtn = await waitForElement('button[data-item-id="address"]', 3000);
+  const addrBtn = await waitForElement('[role="main"] button[data-item-id="address"]', 3000);
   if (addrBtn) {
     const raw = addrBtn.getAttribute('aria-label') || addrBtn.textContent.trim();
     address = raw.replace(/^住所[：:]\s*/, '').trim();
   }
 
   // 電話番号 + phoneStatus（動的待機）
+  // 同様に[role="main"]でスコープ。一覧カードの「発信」ボタンにも
+  // button[data-item-id^="phone:tel:"] と同じ属性が付くことがあり、
+  // スコープなしだと無関係な店舗の電話番号を拾ってしまっていた
   let phone = '';
   let phoneStatus = 'missing';
-  const phoneBtn = await waitForElement('button[data-item-id^="phone:tel:"]', 2500);
+  const phoneBtn = await waitForElement('[role="main"] button[data-item-id^="phone:tel:"]', 2500);
   if (phoneBtn) {
     const itemId = phoneBtn.getAttribute('data-item-id') || '';
     phone = itemId.replace('phone:tel:', '').trim() || phoneBtn.textContent.trim();
@@ -791,7 +825,7 @@ async function scrapeDetailPanel(placeUrl, cardName = '', searchGenre = '') {
   // HP有無 + hasWebsiteStatus（高精度判定）
   let hasWebsite = '無';
   let hasWebsiteStatus = 'no_website';
-  const hpLinkEl = document.querySelector('a[data-item-id="authority"]');
+  const hpLinkEl = document.querySelector('[role="main"] a[data-item-id="authority"]');
   if (hpLinkEl) {
     const hpUrl = (hpLinkEl.getAttribute('href') || '').toLowerCase();
     const portalDomains = [
@@ -819,11 +853,12 @@ async function scrapeDetailPanel(placeUrl, cardName = '', searchGenre = '') {
   }
 
   // 営業時間 (動的待機でtableが開くのを待つ)
+  // ここも[role="main"]でスコープし、他要素のtrを拾わないようにする
   if (hoursToggle) {
-    await waitForElement('tr', 1500);
+    await waitForElement('[role="main"] tr', 1500);
   }
 
-  const rawHourRows = Array.from(document.querySelectorAll('tr'))
+  const rawHourRows = Array.from(document.querySelectorAll('[role="main"] tr'))
     .map(tr => tr.textContent.trim())
     .filter(t => /^[月火水木金土日]曜日/.test(t));
 
@@ -1757,6 +1792,7 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
         const previousPanelName = prevPanelName || getCurrentPanelName();
         const previousPanelUrl = prevPanelUrl || window.location.href;
         const previousPanelAddress = getCurrentPanelAddress();
+        const previousPanelPhone = getCurrentPanelPhone();
 
         // 詳細パネルが既に開いている場合、パネルを閉じずに次カードをクリック
         if (isDetailPanelOpen()) {
@@ -1772,7 +1808,8 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
             expectedUrl: url,
             previousName: previousPanelName,
             previousUrl: previousPanelUrl,
-            previousAddress: previousPanelAddress
+            previousAddress: previousPanelAddress,
+            previousPhone: previousPanelPhone
           }, 3000);
           addTiming(speedStats, 'panelWait', performance.now() - fieldWaitStarted);
 
@@ -1792,7 +1829,8 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
               expectedUrl: url,
               previousName: previousPanelName,
               previousUrl: previousPanelUrl,
-              previousAddress: previousPanelAddress
+              previousAddress: previousPanelAddress,
+              previousPhone: previousPanelPhone
             }, 3000);
             addTiming(speedStats, 'panelWait', performance.now() - panelWaitFallback);
             if (!fallbackReady || !fallbackFieldsReady) {
@@ -1827,7 +1865,8 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
             expectedUrl: url,
             previousName: previousPanelName,
             previousUrl: previousPanelUrl,
-            previousAddress: previousPanelAddress
+            previousAddress: previousPanelAddress,
+            previousPhone: previousPanelPhone
           }, 3000);
           addTiming(speedStats, 'panelWait', performance.now() - fieldWaitStarted);
           if (!fieldsReady) {

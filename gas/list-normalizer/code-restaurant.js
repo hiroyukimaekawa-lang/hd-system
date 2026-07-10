@@ -1136,7 +1136,8 @@ function buildComdeskRow(header, row) {
   const pref = getRowValueByHeader(header, row, "都道府県") || addrDetails.pref;
   const city = getRowValueByHeader(header, row, "市区町村");
   const phone = getRowValueByHeader(header, row, "電話番号");
-  const cleanPhone = normalizePhoneNumberForAnalysis(phone).replace(/[^\d]/g, "");
+  const formattedPhone = normalizePhoneNumberForAnalysis(phone);
+  const cleanPhone = formattedPhone.replace(/[^\d]/g, "");
   const media = getRowValueByHeader(header, row, "媒体");
   const url = getRowValueByHeader(header, row, "URL");
   const hpHave = getRowValueByHeader(header, row, "HP有無");
@@ -1160,7 +1161,7 @@ function buildComdeskRow(header, row) {
   salesRow[4] = addrDetails.pcode;
   salesRow[5] = pref;
   salesRow[6] = address1;
-  salesRow[9] = phone;
+  salesRow[9] = formattedPhone || phone;
   salesRow[14] = url;
   salesRow[15] = "";
   salesRow[17] = media;
