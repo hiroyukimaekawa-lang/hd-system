@@ -129,10 +129,16 @@ async function waitForPanelFieldsReady(options = {}, timeoutMs = 5500) {
         lastPhone = currentPhone;
         phoneStableAt = Date.now();
       }
+      // 「前と同じ値のまま一定時間経過したら本物とみなす」猶予ロジックは、
+      // Googleのパネル更新が単に遅いだけの場合と、更新が止まったまま前の
+      // 店舗のデータが残っている場合を区別できず、後者を誤って「準備完了」
+      // としてしまっていた（他店舗の住所・電話番号の混入バグの直接原因）。
+      // 前の値が分かっている場合は、実際に値が変わったことを確認できる
+      // まで待つ。変わらないまま全体タイムアウトした場合は呼び出し側の
+      // フォールバック（パネルを閉じて開き直す／スキップ）に任せる。
       const phoneChanged = !previousPhone || currentPhone !== previousPhone;
       const phoneStable = Date.now() - phoneStableAt >= 240;
-      const waitedLongEnoughForSamePhone = Date.now() - identityReadyAt >= 900;
-      const phoneReady = phoneStable && (phoneChanged || waitedLongEnoughForSamePhone);
+      const phoneReady = phoneStable && phoneChanged;
 
       if (currentAddress) {
         if (currentAddress !== lastAddress) {
@@ -141,9 +147,10 @@ async function waitForPanelFieldsReady(options = {}, timeoutMs = 5500) {
         }
         const addressChanged = !previousAddress || currentAddress !== previousAddress;
         const addressStable = Date.now() - addressStableAt >= 240;
-        const waitedLongEnoughForSameAddress = Date.now() - identityReadyAt >= 900;
-        if (addressStable && (addressChanged || waitedLongEnoughForSameAddress) && phoneReady) return true;
-      } else if (Date.now() - identityReadyAt >= 700 && phoneReady) {
+        if (addressStable && addressChanged && phoneReady) return true;
+      } else if (!previousAddress && Date.now() - identityReadyAt >= 700 && phoneReady) {
+        // 住所欄自体が存在しない店舗（前の店舗の情報も無い＝最初の1件目など）
+        // の場合のみ、住所なしを正として許容する
         return true;
       }
     }
@@ -1411,15 +1418,28 @@ async function flushBatch(pendingBatch) {
   if (!pendingBatch.length) return 0;
   const payload = [...pendingBatch];
   pendingBatch.length = 0;
-  const flushed = await new Promise(res => {
+  const result = await new Promise(res => {
     try {
-      chrome.runtime.sendMessage({ action: 'updateData', data: payload }, () => {
-        if (chrome.runtime.lastError) { /* ignore */ }
-        res(payload.length);
+      chrome.runtime.sendMessage({ action: 'updateData', data: payload }, response => {
+        if (chrome.runtime.lastError) {
+          res({ success: false, error: chrome.runtime.lastError.message });
+          return;
+        }
+        res(response && typeof response === 'object' ? response : { success: true, count: payload.length });
       });
-    } catch (_) { res(payload.length); }
+    } catch (e) { res({ success: false, error: String(e) }); }
   });
-  return flushed;
+
+  if (!result.success) {
+    // 保存失敗(容量超過等)を以前は検知せず「保存成功」扱いにしていたため、
+    // 取得したはずのデータが気づかれないまま消えるリスクがあった。
+    // 失敗時はバッファに戻して次回flushで再試行し、ログでも警告する。
+    pendingBatch.push(...payload);
+    reportV3Log(`⚠️ データ保存失敗: ${payload.length}件を再試行キューに戻しました / ${result.error || '原因不明'}`);
+    return 0;
+  }
+
+  return payload.length;
 }
 
 function reportV3Log(message) {
@@ -1814,7 +1834,7 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
             previousUrl: previousPanelUrl,
             previousAddress: previousPanelAddress,
             previousPhone: previousPanelPhone
-          }, 3000);
+          }, 4500);
           addTiming(speedStats, 'panelWait', performance.now() - fieldWaitStarted);
 
           const panelDidNotChange = changed.name === previousPanelName && changed.url === previousPanelUrl;
@@ -1841,7 +1861,7 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
               previousUrl: previousPanelUrl,
               previousAddress: previousPanelAddress,
               previousPhone: previousPanelPhone
-            }, 3000);
+            }, 4500);
             addTiming(speedStats, 'panelWait', performance.now() - panelWaitFallback);
             if (!fallbackReady || !fallbackFieldsReady) {
               speedStats.failed++;
@@ -1875,7 +1895,7 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
             previousUrl: previousPanelUrl,
             previousAddress: previousPanelAddress,
             previousPhone: previousPanelPhone
-          }, 3000);
+          }, 4500);
           addTiming(speedStats, 'panelWait', performance.now() - fieldWaitStarted);
           // 住所・電話番号の更新が確認できない場合、以前は「取得は続行」として
           // 未確認のまま(=前の内容の可能性がある)データを使ってしまっていた。
@@ -1972,14 +1992,15 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
           scrollBatchNo: item.scrollBatch
         };
 
-        // 最終防衛ライン: 店名が違うのに住所・電話番号が直前レコードと
-        // 完全一致している場合、パネルが更新されないまま前店舗のデータを
-        // 読んでしまった疑いが強いため、このレコードは保存せずスキップする
-        // （fieldsReadyのチェックをすり抜けた場合の保険）
+        // 最終防衛ライン: 店名が違うのに住所が直前レコードと完全一致している
+        // 場合、パネルが更新されないまま前店舗のデータを読んでしまった疑いが
+        // 強いため、このレコードは保存せずスキップする
+        // （fieldsReadyのチェックをすり抜けた場合の保険）。
+        // 電話番号は両方とも「掲載なし」で空欄同士のケースもあるため、
+        // 住所の一致だけでも十分怪しいと判断する（電話も一致すればなお確実）。
         const suspectedStaleCopy = lastPushedRecord
           && record.name !== lastPushedRecord.name
-          && record.address && record.address === lastPushedRecord.address
-          && record.phone && record.phone === lastPushedRecord.phone;
+          && record.address && record.address === lastPushedRecord.address;
         if (suspectedStaleCopy) {
           speedStats.failed++;
           queuedOrProcessingUrls.delete(url);

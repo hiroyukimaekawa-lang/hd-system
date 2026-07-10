@@ -299,6 +299,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       const updated = [...current, ...unique];
 
       chrome.storage.local.set({ scrapedData: updated }, () => {
+        // 容量超過(QUOTA_BYTES exceeded)等でset自体が失敗しても、
+        // 以前はここでチェックせず常にsuccess:trueを返していたため、
+        // データが保存されないまま「保存成功」として処理が続き、
+        // 気づかれずに件数が欠落するリスクがあった
+        if (chrome.runtime.lastError) {
+          console.error('[BG] scrapedData保存失敗:', chrome.runtime.lastError.message);
+          sendResponse({ success: false, count: current.length, error: chrome.runtime.lastError.message });
+          return;
+        }
         sendResponse({ success: true, count: updated.length });
       });
     });
