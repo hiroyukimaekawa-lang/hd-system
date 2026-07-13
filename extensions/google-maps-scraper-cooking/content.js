@@ -228,9 +228,21 @@ function parseTargetArea(searchArea) {
   if (!normalized) return { prefecture: '', city: '' };
 
   const parsed = parseAddress(normalized);
+  const prefecture = parsed.prefecture || '';
+  // [FIX] 市区町村名が「〜市/〜区/〜町/〜村」で終わっていない入力（例:「銚子」で
+  // 「銚子市」ではない場合）だと parseAddress() 側で市区町村が空になり、
+  // 以前はここで normalized（元の文字列全体、都道府県名を含んだまま）を
+  // そのままcityにフォールバックしていたため、都道府県名がcityに二重に
+  // 混入していた（例:「千葉県銚子」）。エリア判定(matchesTargetArea)は
+  // prefecture文字列とcity文字列を個別に住所へ含むかチェックするため、
+  // cityに都道府県名が混入していると実際の住所と一致しなくなり、該当エリアの
+  // 店舗が全件「エリア外除外」される深刻な不具合の原因になっていた
+  // （銚子市データで「指定:千葉県千葉県千葉県銚子」という三重混入を確認）。
+  // 都道府県名を除いた残り部分だけをcityフォールバックとして使う。
+  const remainder = prefecture ? normalized.slice(prefecture.length) : normalized;
   return {
-    prefecture: parsed.prefecture || '',
-    city: parsed.city || normalized
+    prefecture,
+    city: parsed.city || remainder
   };
 }
 
@@ -327,7 +339,19 @@ async function closeDetailPanel() {
 // リスト終端検知
 // =====================================================================
 function isEndOfList(container) {
-  if (isDetailPanelOpen()) return false;
+  // [FIX] このスクレイパーは詳細パネルを閉じずに次カードをクリックする方式
+  // （「パネルを閉じない方式」、約1820行目）を採用しているため、実際の
+  // スクレイピング中は詳細パネルが開いたままの時間がほとんどを占める。
+  // 以前はisDetailPanelOpen()がtrueの間ずっとfalseを返していたため、
+  // 結果リスト側に「リストの最後に到達しました」の文言が既に表示されていても
+  // それを検知できず、スクロール終了判定（回数上限50回や新規カード無し8回連続
+  // など）に達するまで何度も無駄なスクロールを繰り返す原因になっていた。
+  // 呼び出し元は必ず結果リスト用のcontainer（getScrollContainer()の戻り値）を
+  // 明示的に渡しているため、containerが渡された場合はそのDOM部分木のテキスト
+  // のみを見れば十分であり、詳細パネル（[role="main"]側の別DOM）の内容が
+  // 混入する心配はない。container省略時（document.body全体を見る場合）のみ、
+  // 詳細パネル側のテキストを誤検知しないよう従来通りガードする。
+  if (!container && isDetailPanelOpen()) return false;
   const target = container || document.body;
   const text = target.innerText || '';
   return /リストの最後に到達しました|You've reached the end of the list/.test(text);
@@ -533,14 +557,13 @@ const GENRE_NORMALIZE_MAP = {
   '定食屋': '定食・食堂',
   '食堂': '定食・食堂',
 
-  '弁当': '弁当',
-  '弁当屋': '弁当',
-  'べんとう': '弁当',
-  '仕出し': '弁当',
-
   '韓国': '韓国',
   '韓国料理': '韓国',
 
+  '弁当': 'テイクアウト専門店',
+  '弁当屋': 'テイクアウト専門店',
+  'べんとう': 'テイクアウト専門店',
+  '仕出し': 'テイクアウト専門店',
   'テイクアウト': 'テイクアウト専門店',
   'テイクアウト専門店': 'テイクアウト専門店',
   '持ち帰り': 'テイクアウト専門店',
@@ -563,7 +586,7 @@ const GENRE_ALLOWED_MAP = {
   '蕎麦・うどん': ['蕎麦・うどん'],
   '中華': ['中華'],
   '韓国': ['韓国'],
-  '弁当': ['弁当', 'テイクアウト専門店']
+  'テイクアウト専門店': ['弁当', 'テイクアウト専門店']
 };
 
 // Googleマップ側から実ジャンルが取得できない/対応表に無い場合に、検索キーワードへ
@@ -602,7 +625,7 @@ const NAME_GENRE_PRIORITY_LIST = [
   ['ベーカリー', 'パン屋'],
   ['パン屋', 'パン屋'],
   ['スイーツ', 'スイーツ'],
-  ['弁当', '弁当']
+  ['弁当', 'テイクアウト専門店']
 ];
 
 function findGenreFromStoreName(storeName) {
@@ -956,7 +979,7 @@ async function collectAllPlaceUrlsFromResults(options = {}) {
     maxResults = 0
   } = options;
 
-  const feed = getScrollContainer()
+  let feed = getScrollContainer()
     || document.querySelector('div[role="feed"]')
     || document.querySelector('[aria-label*="検索結果"]')
     || document.querySelector('[aria-label*="Results"]');
@@ -969,6 +992,14 @@ async function collectAllPlaceUrlsFromResults(options = {}) {
   let scrollCount = 0;
 
   for (let i = 0; i < maxScrolls && !stopRequested; i++) {
+    // [FIX] feedを最初の1回しか解決していなかったため、Googleマップ側の
+    // 再レンダリングでこの要素がDOMから差し替えられる（detachされる）と、
+    // 以降isEndOfList(feed)は古い（切り離された）要素のinnerTextを見続ける
+    // ことになり、実際には「リストの最後に到達しました」の文言が画面上に
+    // 表示されていても検知できず、maxScrolls(既定200回・約5分)に達するまで
+    // 延々とスクロールを続けてしまい、詳細取得フェーズが開始しない原因に
+    // なっていた。毎回のスクロール前に最新のコンテナへ再解決する。
+    feed = getScrollContainer() || feed;
     scrollCount = i + 1;
     const beforeCount = seen.size;
     const links = getResultLinks(document);
@@ -1851,7 +1882,27 @@ async function startScraping(maxItems, targetGenres = [], searchArea = '', searc
             await closeDetailPanel();
             addTiming(speedStats, 'back', performance.now() - backMs0);
 
-            cardLink.click();
+            // [FIX] closeDetailPanel()は「戻る」クリック/履歴操作/Escapeキーなど
+            // DOMを大きく書き換える処理を含むため、closeDetailPanel呼び出し前に
+            // 解決していたcardLinkは既にDOMから切り離されている（detached）
+            // 可能性が高い。detached要素へのclick()は何も起こさず、以降の
+            // waitForDetailPanel/waitForPanelFieldsReadyが「変化なし」のまま
+            // 停止して見える原因になっていたため、クリック直前に要素を再解決する。
+            container = getScrollContainer() || container;
+            let fallbackCardEl = resolveCardElementByUrl(url, container);
+            if (!fallbackCardEl) {
+              fallbackCardEl = await scrollToCardUrl(url, container, 20);
+              container = getScrollContainer() || container;
+            }
+            const fallbackCardLink = fallbackCardEl?.querySelector?.('a[href*="/maps/place/"]')
+              || fallbackCardEl?.closest?.('a[href*="/maps/place/"]');
+            if (!fallbackCardLink) {
+              speedStats.failed++;
+              queuedOrProcessingUrls.delete(url);
+              logSkip(item, '詳細取得失敗(フォールバック・カード再取得不可)', cardName || url);
+              continue;
+            }
+            fallbackCardLink.click();
             const panelWaitFallback = performance.now();
             const fallbackReady = await waitForDetailPanel(4000);
             const fallbackFieldsReady = fallbackReady && await waitForPanelFieldsReady({

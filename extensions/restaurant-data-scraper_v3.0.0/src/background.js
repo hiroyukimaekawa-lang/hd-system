@@ -3,6 +3,22 @@
  * ※ SheetJS は offscreen.html で読み込むため importScripts 不要
  */
 
+// [FIX] 以前はService Worker内の例外・未処理rejectionを拾う仕組みが無く、
+// ダウンロード失敗などのエラーが完全にサイレントになっていた
+// （chrome://extensions のService Workerコンソールにすら出ないケースがあった）。
+// 最低限console.errorには残るようにしておく。
+self.addEventListener('error', event => {
+  console.error('[BG error]', {
+    message: event.message,
+    filename: event.filename,
+    lineno: event.lineno,
+    error: event.error && event.error.stack ? event.error.stack : event.error
+  });
+});
+self.addEventListener('unhandledrejection', event => {
+  console.error('[BG unhandledrejection]', event.reason && event.reason.stack ? event.reason.stack : event.reason);
+});
+
 // Service Worker をスリープさせない keepAlive
 function keepAlive() {
   chrome.runtime.getPlatformInfo(() => { });
@@ -216,29 +232,55 @@ function generateFailedUrlsCSV(data) {
   return '\uFEFF' + headers.join(',') + '\n' + rows.join('\n');
 }
 
+// [FIX] 以前はここで例外を握りつぶし console.error に出すだけだったため、
+// ポップアップ側は失敗しても「成功」表示のまま何も起きず、ユーザーからは
+// 原因不明の「CSVボタンを押しても何も起こらない」状態に見えていた。
+// 呼び出し元に成否と失敗理由を返すよう変更する。
 async function triggerDownload(results, metadata, tabId = null) {
-  if (!results || results.length === 0) return;
+  if (!results || results.length === 0) {
+    return { ok: false, error: '取得結果が0件のためCSVを出力できません' };
+  }
+
+  let groups;
+  try {
+    groups = groupResultsForCsv(results, metadata);
+  } catch (err) {
+    console.error('[BG] CSVグループ化失敗:', err);
+    return { ok: false, error: `データ整形エラー: ${err?.message || err}` };
+  }
+
+  if (!groups.length) {
+    return { ok: false, error: '出力対象のグループが0件でした' };
+  }
+
   const timestamp = formatTimestamp();
-  const groups = groupResultsForCsv(results, metadata);
+  const filenames = [];
+  const errors = [];
 
   for (const group of groups) {
-    const csv = generateCSV(group.items);
-    const base64 = btoa(unescape(encodeURIComponent(csv)));
-    const dataUrl = 'data:text/csv;charset=utf-8;base64,' + base64;
-    const mediaPrefix = group.media === '食べログ'
-      ? 'tabelog'
-      : (group.media === 'ホットペッパーグルメ' ? 'hotpepper' : sanitizeFilenamePart(group.media || 'media'));
-    const filename = [
-      mediaPrefix,
-      group.prefecture,
-      group.city,
-      group.genre,
-      timestamp
-    ].map(sanitizeFilenamePart).filter(Boolean).join('_') + '.csv';
-
     try {
-      await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
-      console.log('[BG] CSVダウンロード成功:', filename);
+      const csv = generateCSV(group.items);
+      const base64 = btoa(unescape(encodeURIComponent(csv)));
+      const dataUrl = 'data:text/csv;charset=utf-8;base64,' + base64;
+      const mediaPrefix = group.media === '食べログ'
+        ? 'tabelog'
+        : (group.media === 'ホットペッパーグルメ' ? 'hotpepper' : sanitizeFilenamePart(group.media || 'media'));
+      const filename = [
+        mediaPrefix,
+        group.prefecture,
+        group.city,
+        group.genre,
+        timestamp
+      ].map(sanitizeFilenamePart).filter(Boolean).join('_') + '.csv';
+
+      const downloadId = await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
+      if (downloadId == null) {
+        // downloads.download は失敗時に例外を投げずundefinedを返すことがある
+        // （ダウンロード設定でブロックされている場合など）
+        throw new Error('chrome.downloads.downloadがdownloadIdを返しませんでした（ブラウザのダウンロード設定でブロックされている可能性があります）');
+      }
+      console.log('[BG] CSVダウンロード成功:', filename, 'id:', downloadId);
+      filenames.push(filename);
       if (tabId != null) {
         pushLog(tabId, `CSV出力完了：${filename}`, 'good');
         chrome.runtime.sendMessage({
@@ -249,12 +291,21 @@ async function triggerDownload(results, metadata, tabId = null) {
       }
     } catch (err) {
       console.error('[BG] CSVダウンロード失敗:', err);
+      errors.push(err?.message || String(err));
+      if (tabId != null) {
+        pushLog(tabId, `CSV出力失敗：${err?.message || err}`, 'err');
+      }
     }
   }
+
+  if (errors.length && !filenames.length) {
+    return { ok: false, error: errors.join(' / ') };
+  }
+  return { ok: true, filenames, errors: errors.length ? errors : undefined };
 }
 
 async function triggerFailedUrlsDownload(failedUrls, metadata = {}, tabId = null) {
-  if (!failedUrls || failedUrls.length === 0) return;
+  if (!failedUrls || failedUrls.length === 0) return { ok: false, error: '失敗URLが0件です' };
   const timestamp = formatTimestamp();
   const media = metadata.media === 'tabelog' ? 'tabelog' : (metadata.media === 'hotpepper' ? 'hotpepper' : 'media');
   const csv = generateFailedUrlsCSV(failedUrls);
@@ -262,8 +313,11 @@ async function triggerFailedUrlsDownload(failedUrls, metadata = {}, tabId = null
   const dataUrl = 'data:text/csv;charset=utf-8;base64,' + base64;
   const filename = `${media}_failed_urls_${timestamp}.csv`;
   try {
-    await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
-    console.log('[BG] 失敗URL CSVダウンロード成功:', filename);
+    const downloadId = await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
+    if (downloadId == null) {
+      throw new Error('chrome.downloads.downloadがdownloadIdを返しませんでした（ブラウザのダウンロード設定でブロックされている可能性があります）');
+    }
+    console.log('[BG] 失敗URL CSVダウンロード成功:', filename, 'id:', downloadId);
     if (tabId != null) {
       pushLog(tabId, `失敗URL出力完了：${filename}`, 'warn');
       chrome.runtime.sendMessage({
@@ -272,23 +326,30 @@ async function triggerFailedUrlsDownload(failedUrls, metadata = {}, tabId = null
         message: `失敗URL出力完了：${filename}`
       }).catch(() => { });
     }
+    return { ok: true, filename };
   } catch (err) {
     console.error('[BG] 失敗URL CSVダウンロード失敗:', err);
+    return { ok: false, error: err?.message || String(err) };
   }
 }
 
 async function triggerXlsxDownload(base64, metadata) {
   if (!base64) {
     console.warn('[BG] xlsx base64データなし');
-    return;
+    return { ok: false, error: 'Excelデータが空でした' };
   }
   const dataUrl = 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' + base64;
   const filename = buildFilename(metadata, 'xlsx');
   try {
-    await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
-    console.log('[BG] Excelダウンロード成功:', filename);
+    const downloadId = await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
+    if (downloadId == null) {
+      throw new Error('chrome.downloads.downloadがdownloadIdを返しませんでした（ブラウザのダウンロード設定でブロックされている可能性があります）');
+    }
+    console.log('[BG] Excelダウンロード成功:', filename, 'id:', downloadId);
+    return { ok: true, filename };
   } catch (err) {
     console.error('[BG] Excelダウンロード失敗:', err);
+    return { ok: false, error: err?.message || String(err) };
   }
 }
 
@@ -322,30 +383,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.type === 'DOWNLOAD_XLSX') {
-      triggerXlsxDownload(message.base64, message.metadata);
-      chrome.storage.local.set({
-        [`last_results_${message.tabId}`]: {
-          results: message.results, metadata: message.metadata, timestamp: Date.now()
-        }
-      });
-      sendResponse({ ok: true });
+      // [FIX] 以前はダウンロードの成否を待たずに ok:true を返していたため、
+      // 実際に失敗していてもポップアップには「成功」としか表示されなかった。
+      // 実際の結果を待ってから返すよう変更。
+      (async () => {
+        const result = await triggerXlsxDownload(message.base64, message.metadata);
+        chrome.storage.local.set({
+          [`last_results_${message.tabId}`]: {
+            results: message.results, metadata: message.metadata, timestamp: Date.now()
+          }
+        });
+        sendResponse(result);
+      })();
       return true;
     }
 
     if (message.type === 'DOWNLOAD_CSV') {
-      triggerDownload(message.results, message.metadata, message.tabId);
-      chrome.storage.local.set({
-        [`last_results_${message.tabId}`]: {
-          results: message.results, metadata: message.metadata, timestamp: Date.now()
-        }
-      });
-      sendResponse({ ok: true });
+      // [FIX] 同上。CSVダウンロードの実際の成否・エラー内容を返す。
+      (async () => {
+        const result = await triggerDownload(message.results, message.metadata, message.tabId);
+        chrome.storage.local.set({
+          [`last_results_${message.tabId}`]: {
+            results: message.results, metadata: message.metadata, timestamp: Date.now()
+          }
+        });
+        sendResponse(result);
+      })();
       return true;
     }
 
     if (message.type === 'DOWNLOAD_FAILED_URLS') {
-      triggerFailedUrlsDownload(message.failedUrls, message.metadata, message.tabId);
-      sendResponse({ ok: true });
+      (async () => {
+        const result = await triggerFailedUrlsDownload(message.failedUrls, message.metadata, message.tabId);
+        sendResponse(result || { ok: true });
+      })();
       return true;
     }
 

@@ -234,7 +234,31 @@ async function appendV3Log(message) {
 
 async function downloadCsvFile(data, filename) {
   const encodedUri = 'data:text/csv;charset=utf-8,' + encodeURIComponent(buildCsvContent(data));
-  await chrome.downloads.download({ url: encodedUri, filename, saveAs: false });
+  // [FIX] 以前は chrome.downloads.download(...) をコールバックなしで await するだけで、
+  // 戻り値やエラーを一切確認していなかった。chrome.downloads.download は
+  // 「連続自動ダウンロードのブロック」等が発生した場合、例外を投げずに
+  // downloadId が undefined のまま解決することがあり、この場合は呼び出し側からは
+  // 正常終了したようにしか見えず、CSVが実際には出力されないままだった
+  // （食べログ側拡張機能で確認したのと同種の不具合）。
+  // downloadId を明示的に確認し、失敗時は例外を投げて呼び出し元（downloadGroupedCsvFiles
+  // → triggerV3GenreDownloadハンドラ）のtry/catchで検知できるようにする。
+  const downloadId = await new Promise((resolve, reject) => {
+    try {
+      chrome.downloads.download({ url: encodedUri, filename, saveAs: false }, id => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message || 'chrome.downloads.download failed'));
+          return;
+        }
+        resolve(id);
+      });
+    } catch (e) {
+      reject(e);
+    }
+  });
+  if (downloadId == null) {
+    throw new Error(`ダウンロードを開始できませんでした（filename: ${filename}）。Chromeの「複数ファイルの自動ダウンロード」がブロックされている可能性があります。`);
+  }
+  return downloadId;
 }
 
 function safeTabSendMessage(tabId, message) {
@@ -319,6 +343,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       if (request.state === 'active') {
         chrome.power.requestKeepAwake('display');
         chrome.alarms.create('keepAlive', { periodInMinutes: 0.5 });
+        // [FIX] currentRunIdは旧版popup.js（手動1回検索）の実行時にしか
+        // chrome.storage.localへ書き込まれておらず、v3オーケストレーター
+        // （エリア×ジャンル自動巡回）経由の実行では一度も設定されないまま
+        // だった。そのため下のdoneハンドラで毎回 `result.currentRunId || 'default_run'`
+        // が必ず固定文字列 'default_run' に落ち、Service Workerが生き続けている限り
+        // （keepAliveアラームで維持され続けるため実質ほぼ常時）2回目以降の
+        // 巡回が「重複ダウンロードとしてスキップ」され、CSVが一切出力されなく
+        // なる不具合の直接の原因になっていた
+        // （コンソールログ「[BG] Download for runId default_run already executed.
+        // Skipping duplicate.」で実際に確認）。
+        // スクレイピング開始のたびに一意なrunIdを新規発行して保存することで、
+        // 実行ごとに別キーとして扱われるようにする。
+        await new Promise(resolve => {
+          chrome.storage.local.set({
+            currentRunId: `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+          }, resolve);
+        });
       } else {
         chrome.power.releaseKeepAwake();
         chrome.alarms.clear('keepAlive');

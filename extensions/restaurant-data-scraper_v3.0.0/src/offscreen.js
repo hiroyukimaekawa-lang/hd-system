@@ -1459,7 +1459,7 @@ const TABELOG_GENRE_TO_FINAL_GENRE = {
   '串焼き': '焼き鳥',
   'もつ焼き': '焼き鳥',
   '回転寿司': '寿司',
-  '弁当': '弁当',
+  '弁当': 'テイクアウト専門店',
   'からあげ': 'テイクアウト専門店',
   'おにぎり': 'テイクアウト専門店',
   '牛丼': '定食・食堂',
@@ -1493,10 +1493,10 @@ function mapToFinalGenre(rawCategoryName) {
   return raw;
 }
 
-// GAS側のHD_TARGET_GENRESと完全一致させること（20種類）
+// GAS側のHD_TARGET_GENRESと完全一致させること（19種類・弁当はテイクアウト専門店に統合済み）
 const FINAL_GENRE_LIST = [
   'カフェ', '居酒屋', 'スナック', 'Bar', 'パン屋', '焼き鳥', 'お好み焼き', '焼肉', 'スイーツ', '中華',
-  'ハンバーガー', '蕎麦・うどん', '寿司', '和食', '洋食', '定食・食堂', '弁当', '韓国', 'テイクアウト専門店', 'ラーメン'
+  'ハンバーガー', '蕎麦・うどん', '寿司', '和食', '洋食', '定食・食堂', '韓国', 'テイクアウト専門店', 'ラーメン'
 ];
 function isValidFinalGenre(genre) {
   return FINAL_GENRE_LIST.indexOf(String(genre || '').trim()) !== -1;
@@ -1541,7 +1541,7 @@ const NAME_GENRE_PRIORITY_LIST = [
   ['喫茶', 'カフェ'],
   ['珈琲', 'カフェ'],
   ['スイーツ', 'スイーツ'],
-  ['弁当', '弁当']
+  ['弁当', 'テイクアウト専門店']
 ];
 
 function findGenreFromStoreName(storeName) {
@@ -1945,7 +1945,22 @@ async function runPopularGenreCrawl(tabId, listUrl, maxItemsPerGenre, speedConfi
     console.error('[runPopularGenreCrawl] エラー:', err);
     sendToBackground(tabId, 'ERROR', { message: `人気ジャンル一括取得エラー: ${err.message}` });
   } finally {
-    activeTasks.delete(parentTaskKey);
+    // [FIX] 以前はここで activeTasks.delete(parentTaskKey) を呼んでおり、
+    // 完了直後にタスク（＝取得済み445件などのresults配列）をメモリから
+    // 即座に消していた。人気ジャンル一括取得は35ジャンルを順番に処理する
+    // ため完了まで数分〜数十分かかることがあり、その間にポップアップが
+    // 閉じられている（または一度閉じて開き直された）ケースでは、完了時に
+    // 送信されるDONEメッセージをポップアップが受け取れない。その状態で
+    // ポップアップがGET_RESULTSを送っても、この行でタスクごと削除されて
+    // いたため results:[] が返り、CSVボタンがずっと無効のまま・押しても
+    // ダウンロードできない不具合になっていた（通常の単一ジャンル取得の
+    // runCrawlTask()では最初からタスクを削除しておらず、この不整合が原因）。
+    // running=false にするだけに留め、resultsは保持しておくことで、後から
+    // ポップアップを開き直してもGET_RESULTSで取得・ダウンロードできるようにする。
+    const finishedParentTask = activeTasks.get(parentTaskKey);
+    if (finishedParentTask) {
+      finishedParentTask.running = false;
+    }
   }
 }
 

@@ -83,7 +83,15 @@ async function v3Log(message) {
   logs.push({ t: v3Timestamp(), msg: message });
   if (logs.length > V3_LOG_MAX) logs.splice(0, logs.length - V3_LOG_MAX);
   await v3Set({ [V3K.logs]: logs });
-  try { chrome.runtime.sendMessage({ action: 'v3_logPush', entry: logs[logs.length - 1] }); } catch (_) { }
+  // [FIX] chrome.runtime.sendMessage(...)はコールバックを渡さない場合Promiseを
+  // 返すMV3の仕様上、同期的なtry/catchでは非同期に発生するreject（ポップアップが
+  // 閉じていて受信側が存在しない場合の「Could not establish connection.
+  // Receiving end does not exist.」）を捕捉できない。v3Log()はスクロール1回ごと
+  // など非常に高頻度に呼ばれるため、ポップアップを閉じたまま長時間の巡回（寿司・
+  // パン屋のように結果件数が多くスクロール回数が増えるジャンルで特に顕著）を
+  // させていると、このエラーがコンソールに大量に出続けていた。処理自体への
+  // 影響はないが、本来のエラーが埋もれる原因になるため.catch()で確実に握りつぶす。
+  chrome.runtime.sendMessage({ action: 'v3_logPush', entry: logs[logs.length - 1] }).catch(() => { });
 }
 
 // ---- offscreen document ------------------------------------
@@ -149,9 +157,21 @@ function parseAreaInput(value) {
   if (!normalized) return { prefecture: '', city: '', subArea: '' };
 
   const match = normalized.match(/^((?:北海道|東京都|大阪府|京都府|.{2,3}県))?((?:.+?郡.+?[町村]|.+?市.+?区|.+?[市区町村]))?(.*)?$/);
+  const prefecture = match?.[1] || '';
+  // [FIX] 市区町村名が「〜市/〜区/〜町/〜村」で終わっていない入力（例:「銚子」で
+  // 「銚子市」ではない場合）だと市区町村グループ(match[2])がマッチせず、
+  // 以前はここで normalized（元の文字列全体、都道府県名を含んだまま）を
+  // そのままcityにフォールバックしていたため、都道府県名がcityに二重に
+  // 混入していた（例:「千葉県銚子」）。この文字列がbuildGoogleMapsSearchQuery()で
+  // 「千葉県 千葉県銚子」として検索クエリに使われ、content.js側の同種の
+  // フォールバックとも重なって三重混入（「千葉県千葉県千葉県銚子」）にまで
+  // 膨れ上がり、該当エリアの店舗が全件「エリア外除外」される深刻な不具合の
+  // 原因になっていた（銚子市データで確認）。都道府県名を除いた残り部分だけを
+  // cityフォールバックとして使う。
+  const remainder = prefecture ? normalized.slice(prefecture.length) : normalized;
   return {
-    prefecture: match?.[1] || '',
-    city: match?.[2] || (match?.[1] === normalized ? '' : normalized),
+    prefecture,
+    city: match?.[2] || remainder,
     subArea: ''
   };
 }
@@ -418,6 +438,23 @@ function extractLatLngZoomFromUrl(url) {
   return { lat: m[1], lng: m[2], zoom: m[3] };
 }
 
+// /maps/place/<市区町村名> のURLから、Googleが実際に解決した地点名を取り出す
+// （URLパスの2番目のセグメントがエンコード済みの地点名になっている）
+function extractResolvedPlaceNameFromUrl(url) {
+  const m = String(url || '').match(/\/maps\/place\/([^/]+)/);
+  if (!m) return '';
+  try { return decodeURIComponent(m[1]).replace(/\+/g, ' ').trim(); }
+  catch (_) { return m[1]; }
+}
+
+// 行政区域名（〜都/道/府/県/市/区/町/村）で終わっているかどうか。
+// 「鴨川シーワールド」のように市区町村名を含む観光施設名は市区町村名を
+// 前方一致で含んでしまうため、部分一致だけでは見分けられない。
+// 行政区域名は必ずこの語尾で終わるという性質を使って判定する。
+function looksLikeAdministrativeAreaName(name) {
+  return /(都|道|府|県|市|区|町|村)$/.test(String(name || '').trim());
+}
+
 async function resolveAreaCoordinates(targetArea, tabId) {
   const cacheKey = JSON.stringify({
     pref: targetArea.prefecture || '',
@@ -433,10 +470,32 @@ async function resolveAreaCoordinates(targetArea, tabId) {
   }
 
   try {
-    const placeUrl = `https://www.google.co.jp/maps/place/${encodeURIComponent(searchArea)}`;
+    // [FIX] /maps/place/<市区町村名> だけのあいまいな検索は、Googleが
+    // 「一番有名なスポット」（例:鴨川市→鴨川シーワールド）に単独ジャンプ
+    // してしまうことがある。その場合は市区町村とは無関係な地点の座標になり、
+    // 以降の全ジャンル検索がその観光地付近だけに偏る/取得が止まって見える
+    // 原因になっていた。/maps/search/ は複数候補を並べる検索エンドポイント
+    // で、実際のジャンル検索でも問題なく使われている形式のため、こちらに
+    // 統一して単独ジャンプのリスクを下げる。
+    const placeUrl = `https://www.google.co.jp/maps/search/${encodeURIComponent(searchArea)}`;
     await chrome.tabs.update(tabId, { url: placeUrl, active: false });
     await waitForTabComplete(tabId);
     const tab = await chrome.tabs.get(tabId);
+
+    // それでも単独の場所ページへジャンプしてしまった場合の保険。
+    // 行政区域名（都/道/府/県/市/区/町/村で終わる）ではない地点名に
+    // 解決された場合は、無関係な観光施設等に着地したとみなして信用しない。
+    // （「鴨川シーワールド」のように市区町村名を前方一致で含む施設名もある
+    // ため、部分一致ではなく語尾の行政区域サフィックスで判定する）
+    const resolvedName = extractResolvedPlaceNameFromUrl(tab.url);
+    const nameLooksUnrelated = resolvedName && !looksLikeAdministrativeAreaName(resolvedName);
+
+    if (nameLooksUnrelated) {
+      await v3Log(`⚠ 「${searchArea}」が無関係な地点「${resolvedName}」に解決されたため、座標なしで検索を続行します`);
+      areaCoordCache.set(cacheKey, null);
+      return null;
+    }
+
     const coords = extractLatLngZoomFromUrl(tab.url);
     if (coords) {
       await v3Log(`📍 「${searchArea}」の中心座標を取得: ${coords.lat}, ${coords.lng}`);
@@ -602,14 +661,31 @@ async function v3Drive() {
             unique.push(item);
           }
           const downloadId = `${runId || 'v3'}_${genreIdx}_${genre}_complete`;
-          chrome.runtime.sendMessage({
-            action: 'triggerV3GenreDownload',
-            downloadId,
-            area: cityForDownload,
-            genre,
-            data: unique
-          }).catch(() => { });
-          await v3Log(`⬇ ${genre} CSVを出力しました (${unique.length}件)`);
+          // [FIX] 以前は sendMessage の結果（成功/失敗）を確認せず、送信できた時点で
+          // 無条件に「CSVを出力しました」とログしていた。実際には
+          // chrome.downloads.download 側の失敗（連続自動ダウンロードのブロック等）で
+          // ダウンロードが行われていないケースでも「出力しました」と表示されるため、
+          // CSVが無いことにユーザーが気づけない原因になっていた。応答を確認し、
+          // 失敗時はエラー内容をログに残す。
+          const dlRes = await new Promise(resolve => {
+            try {
+              chrome.runtime.sendMessage({
+                action: 'triggerV3GenreDownload',
+                downloadId,
+                area: cityForDownload,
+                genre,
+                data: unique
+              }, res => {
+                if (chrome.runtime.lastError) { resolve(null); return; }
+                resolve(res);
+              });
+            } catch (_) { resolve(null); }
+          });
+          if (dlRes && dlRes.ok === false) {
+            await v3Log(`⚠ ${genre} CSV出力に失敗しました: ${dlRes.error || '原因不明'}`);
+          } else {
+            await v3Log(`⬇ ${genre} CSVを出力しました (${unique.length}件)`);
+          }
         } else {
           await v3Log(`⬇ ${genre} CSV出力対象なし`);
         }

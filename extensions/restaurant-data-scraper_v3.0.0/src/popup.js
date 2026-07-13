@@ -357,10 +357,18 @@ function downloadCSV() {
     results: allResults,
     metadata
   }, res => {
+    // [FIX] 以前はbackground側が常にok:trueを返していたため、実際の
+    // ダウンロード失敗（容量超過・ブラウザのダウンロード設定など）が
+    // 起きてもここでは検知できず「開始しました」としか表示されなかった。
+    // 実際のエラー内容を表示するよう変更。
+    if (chrome.runtime.lastError) {
+      addLog(`CSV出力に失敗しました: ${chrome.runtime.lastError.message}`, 'err');
+      return;
+    }
     if (res?.ok) {
-      addLog(`CSV出力開始: ${allResults.length}件`, 'good');
+      addLog(`CSV出力完了: ${allResults.length}件`, 'good');
     } else {
-      addLog('CSV出力に失敗しました', 'err');
+      addLog(`CSV出力に失敗しました: ${res?.error || '原因不明'}`, 'err');
     }
   });
 }
