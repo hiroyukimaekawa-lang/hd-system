@@ -1,12 +1,20 @@
 /**
- * 楽天トラベル宿泊施設専用GAS Ver1.3.0
+ * 楽天トラベル宿泊施設専用GAS Ver2.0.0
  *
  * 目的：
  * Octoparseで取得した楽天トラベル宿泊施設リストを、
  * CSV投入フォルダ方式で自動取り込みし、
- * 詳細URL作成・詳細データ結合・個人店寄り分類・エリア分け・CSV出力まで行う。
+ * 個人店寄り分類・エリア分け・CSV出力まで行う。
  *
- * ★Ver1.3.0の変更点（Ver1.2.0からの差分）：
+ * ★Ver2.0.0の変更点（Ver1.3.0からの差分）：
+ * Octoparse側のタスクが1本にまとまり、投入フォルダに入れるCSVの時点で
+ * 住所・電話番号（・部屋数）まで全て取得できている状態になったため、
+ * 飲食店側のGAS（gas/list-normalizer/code.js）と同じ「投入フォルダ1つだけ」の
+ * 構成に統一した。旧バージョンにあった「一覧CSV投入フォルダ／詳細CSV投入フォルダ」
+ * の2フォルダ体制、詳細URL一覧の作成、Octoparseタスク2本に分けての二段階結合は
+ * 廃止した（Ver1.3.0までのソースはgitの履歴を参照）。
+ *
+ * ★Ver1.3.0の変更点（Ver1.2.0からの差分。現在も有効な仕様）：
  * 1. 部屋数（客室数）による営業対象判定を追加。
  *    「電気切り替え条件で宿泊施設に無料HP作成」という営業は、自前で立派なHPや
  *    マーケティング体制をすでに持っている大型ホテルよりも、そうした体制を
@@ -14,45 +22,23 @@
  *    向いている。部屋数が一定数（既定15室）以上の施設は、既存のチェーン系
  *    ホテル・大型旅館である可能性が高いため、チェーンキーワードに一致しなくても
  *    部屋数だけで除外できるようにした。
- *    Octoparse側の部屋数列の実際のヘッダー名がまだ確定していないため、
- *    RAKUTEN_ROOM_COUNT_COLUMNS によく使われそうな候補名を複数登録し、
- *    実際の列名が分かり次第そこに追加するだけで反映されるようにしてある
- *    （店名・住所等、他の項目と同じ「候補名リストから探す」方式に統一）。
- * 2. 宿泊系チェーンの除外キーワードを大幅に拡充。
- *    従来はアパホテル・東横INN・ルートイン等、主要チェーンの一部しか
- *    登録されていなかったため、他の全国チェーン（ホテルマイステイズ、
- *    ヴィアイン、チサンホテル、JRホテルグループ、ワシントンホテル等）が
- *    未除外のまま営業対象に混ざるリスクがあった。飲食店側のGAS
- *    （MASTER_CHAIN・fixKnownChainMasterGaps）で行っているのと同じ考え方で、
- *    既知の主要チェーンをまとめて追加した。
- * 3. 04_SALES系タブの備考欄に部屋数を表示するようにし、架電担当が
- *    リストを見ただけで規模感を把握できるようにした。
+ *    Octoparseの「フィールドN」列はラベルと値が交互に並ぶ形式で出力されるため
+ *    （実データ確認: フィールド6="総部屋数"(ラベル)→フィールド7="65室"(値)）、
+ *    列番号を決め打ちせず、ラベル文字列で値列を探す方式にしてある
+ *    （rktFindFieldByLabel_。列番号がズレても追従できる）。
+ * 2. 宿泊系チェーンの除外キーワードを大幅に拡充（アパホテル・ルートイン・
+ *    東横INN等の主要チェーンに加え、ホテルマイステイズ・ヴィアイン・
+ *    チサンホテル・ワシントンホテル等）。加えて「〇〇ホテルグループ」という
+ *    自己申告的な表記自体も汎用の除外条件にしている（個別ブランド名を
+ *    覚えなくても同種の中小チェーンを広く拾える）。
+ * 3. 04_SALES系タブの備考欄に部屋数を表示し、架電担当がリストを見ただけで
+ *    規模感を把握できるようにした。
  *
- * Ver1.2.0の変更点（Ver1.1.0以前からの差分）：
- * Octoparseのタスクを1本にまとめて、一覧の時点で「住所・TEL・FAX」まで
- * 同じ行に取得できるようになったため、従来の
- *   1. 一覧CSV取り込み → 2. 詳細URL一覧作成 → 3. Octoparseタスク2で詳細CSV取得 → 4. 結合
- * という二段階方式に加えて、
- *   1. 一覧CSV（住所・TEL・FAX込み）を取り込むだけで正規化まで進む
- * という「一体型CSV」方式に自動対応した。
- * 「楽天_raw」シートに フィールド3(住所)・フィールド5(電話番号) 列があり、
- * かつ実際にデータが入っていれば、詳細CSVがなくても自動的に一体型として処理する。
- * 「楽天_詳細抽出」シートにデータが入っている場合は、従来通り二段階結合を行う
- * （両対応・自動判定なので、Octoparseタスクの組み方はどちらでもよい）。
- *
- * 通常運用（一体型CSV / Octoparseタスク1本のみの場合）：
+ * 通常運用：
  * 1. 「0. 初期タブ・投入フォルダを作成」を実行
- * 2. Octoparseで取得した「住所・TEL・FAX込み」のCSVを「楽天_raw_CSV投入フォルダ」に入れる
+ * 2. Octoparseで取得した（住所・電話番号・部屋数まで入った）CSVを
+ *    「楽天_CSV投入フォルダ」に入れる
  * 3. 「🚀 全自動処理：投入済みCSVからCSV出力まで実行」を実行
- *    → 詳細CSVが無くても、一覧CSVに住所・電話番号が入っていればそのまま最後まで処理される
- *
- * 通常運用（二段階方式 / Octoparseタスク2本に分ける場合。従来通り）：
- * 1. 「0. 初期タブ・投入フォルダを作成」を実行
- * 2. Octoparseタスク1の一覧CSVを「楽天_raw_CSV投入フォルダ」に入れる
- * 3. 「1. 一覧CSV取り込み・詳細URL一覧作成」を実行
- * 4. 「楽天_詳細URL一覧」の「基本情報URL_std」をOctoparseタスク2に入れる
- * 5. Octoparseタスク2の詳細CSVを「楽天_詳細_CSV投入フォルダ」に入れる
- * 6. 「🚀 全自動処理：投入済みCSVからCSV出力まで実行」を実行
  */
 
 // =====================================================================
@@ -63,17 +49,70 @@ function onOpen() {
     .createMenu("🏕 楽天トラベル宿泊施設")
     .addItem("0. 初期タブ・投入フォルダを作成", "rakutenSetupAll")
     .addSeparator()
-    .addItem("1. 一覧CSV取り込み・詳細URL一覧作成", "rakutenImportRawAndCreateDetailUrls")
-    .addItem("2. 詳細CSVだけ取り込み", "rakutenImportDetailOnly")
+    .addItem("1. CSV取り込み", "rakutenImportCsv")
+    .addItem("2. 楽天 一覧を正規化", "rakutenNormalizeAndMerge")
+    .addItem("3. 楽天 宿泊施設を分類・地域別タブ作成", "rakutenSplitClassifySheets")
+    .addItem("4. 楽天 システム投入CSVタブ作成", "rakutenCreateSalesSheets")
+    .addItem("5. 楽天 CSVをDrive出力", "rakutenExportSalesCsvFiles")
     .addSeparator()
-    .addItem("3. 楽天 詳細URL一覧を作成", "rakutenCreateDetailUrlList")
-    .addItem("4. 楽天 一覧＋詳細を結合・正規化", "rakutenNormalizeAndMerge")
-    .addItem("5. 楽天 宿泊施設を分類・地域別タブ作成", "rakutenSplitClassifySheets")
-    .addItem("6. 楽天 システム投入CSVタブ作成", "rakutenCreateSalesSheets")
-    .addItem("7. 楽天 CSVをDrive出力", "rakutenExportSalesCsvFiles")
+    .addItem("🚀 全自動処理：投入済みCSVからCSV出力まで実行", "rakutenRunAllFromFolder")
     .addSeparator()
-    .addItem("🚀 全自動処理：投入済みCSVからCSV出力まで実行", "rakutenRunAllFromFolders")
+    .addItem("⏰ 自動実行トリガーを設定（15分おき）", "rakutenInstallAutoTrigger")
+    .addItem("⏰ 自動実行トリガーを解除", "rakutenRemoveAutoTrigger")
     .addToUi();
+}
+
+// =====================================================================
+// 0.5 自動実行トリガー
+// =====================================================================
+// 投入フォルダにCSVを置くだけで、スプレッドシートを開かなくても
+// 自動で「🚀 全自動処理」が走るようにする時間主導型トリガー。
+// スクレイパー（scraper/scrape.js）がCSVを楽天_CSV投入フォルダに置いた後、
+// このトリガーが次の周期（既定15分）で拾って処理する。
+// 何もCSVが無いときは rakutenRunAllFromFolder() 内の rawCount<=0 チェックで
+// 即座に抜けるだけなので、無駄なCSV出力やアラートは発生しない
+// （ただし alert() は時間主導トリガーからは呼べないため、トリガー実行時は
+// 内部で例外を握りつぶすようにしている。詳しくは rakutenRunAllFromFolderSilent 参照）。
+function rakutenInstallAutoTrigger() {
+  rakutenRemoveAutoTrigger();
+
+  ScriptApp.newTrigger("rakutenRunAllFromFolderSilent")
+    .timeBased()
+    .everyMinutes(15)
+    .create();
+
+  SpreadsheetApp.getUi().alert(
+    "自動実行トリガーを設定しました。\n\n" +
+    "以後、楽天_CSV投入フォルダにCSVを置くだけで、15分以内に自動で処理されます。\n" +
+    "（スプレッドシートを開いている必要はありません）"
+  );
+}
+
+function rakutenRemoveAutoTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  let removed = 0;
+
+  triggers.forEach(t => {
+    if (t.getHandlerFunction() === "rakutenRunAllFromFolderSilent") {
+      ScriptApp.deleteTrigger(t);
+      removed++;
+    }
+  });
+
+  if (removed > 0) {
+    Logger.log(`[楽天] 既存の自動実行トリガーを${removed}件解除しました。`);
+  }
+}
+
+// 時間主導トリガーから呼ばれる版。SpreadsheetApp.getUi()はトリガー実行時に
+// 使えず例外になるため、rakutenRunAllFromFolder()本体を直接は呼ばずに
+// silent=trueで内部処理だけ行うラッパーにしてある。
+function rakutenRunAllFromFolderSilent() {
+  try {
+    rakutenRunAllFromFolder(true);
+  } catch (e) {
+    Logger.log(`[楽天] 自動実行中にエラー: ${e.message}`);
+  }
 }
 
 // =====================================================================
@@ -81,8 +120,6 @@ function onOpen() {
 // =====================================================================
 const RAKUTEN_SHEETS = {
   raw: "楽天_raw",
-  detailUrl: "楽天_詳細URL一覧",
-  detail: "楽天_詳細抽出",
   normalized: "楽天_正規化",
   target: "楽天_営業対象",
   confirm: "楽天_要確認",
@@ -91,24 +128,19 @@ const RAKUTEN_SHEETS = {
 };
 
 const RAKUTEN_FOLDER_NAMES = {
-  rawInput: "楽天_raw_CSV投入フォルダ",
-  rawProcessed: "楽天_raw_処理済みフォルダ",
-  detailInput: "楽天_詳細_CSV投入フォルダ",
-  detailProcessed: "楽天_詳細_処理済みフォルダ",
+  input: "楽天_CSV投入フォルダ",
+  processed: "楽天_処理済みフォルダ",
   export: "完成版CSVエクスポート"
 };
 
-// Octoparseタスク1（一覧）の実際の出力列名。
-// 「フィールド1_テキスト_テキスト」＝施設名、「フィールド1_リンク_リンク」＝詳細ページURL。
-// ※一体型CSV（住所・TEL・FAX込み）の場合は「フィールド1_テキスト」「フィールド1_リンク」（末尾の重複なし）になることもあるため、
-//   両方のパターンを候補に入れている。
+// Octoparseの実際の出力列名（茨城県宿泊.csvで確認済み）。
+// 「フィールド1_テキスト」＝施設名、「フィールド1_リンク」＝詳細ページURL。
 const RAKUTEN_RAW_NAME_COLUMNS = ["フィールド1_テキスト_テキスト", "フィールド1_テキスト", "jsraleventscroll", "タイトル", "施設名", "店名", "名前"];
 const RAKUTEN_RAW_URL_COLUMNS = ["フィールド1_リンク_リンク", "フィールド1_リンク", "jsraleventscroll_URL", "タイトルURL", "フィールド", "URL", "楽天URL"];
 
-// ★Ver1.3.0 NEW: 部屋数（客室数）列の候補名。
-// Octoparse側の実際のヘッダー名がまだ確定していないため、店名・住所等と同じ
-// 「候補名リストの中から最初に見つかったものを使う」方式にしてある。
-// 実際の列名が分かったら、この配列の先頭に追加するだけで反映される。
+// 部屋数（客室数）列の候補名。
+// ラベル文字列一致（rktFindFieldByLabel_）で見つからなかった場合の
+// フォールバック用。実際の列名が別途分かれば、この配列の先頭に追加するだけで反映される。
 const RAKUTEN_ROOM_COUNT_COLUMNS = [
   "部屋数",
   "客室数",
@@ -123,7 +155,7 @@ const RAKUTEN_ROOM_COUNT_COLUMNS = [
   "rooms"
 ];
 
-// ★Ver1.3.0 NEW: 部屋数がこの数値以上なら「規模が大きく、自前でHP・マーケティング体制を
+// 部屋数がこの数値以上なら「規模が大きく、自前でHP・マーケティング体制を
 // すでに持っている可能性が高い」とみなして営業対象から除外する。
 // 「電気切り替え条件でHP無料作成」の営業接点は、そうした体制をまだ持っていない
 // 小規模施設（民宿・ペンション・ゲストハウス等）ほど刺さりやすいという想定。
@@ -160,8 +192,7 @@ const RAKUTEN_NORMALIZED_HEADER = [
   "重複判定",
   "元一覧URL",
   "基本情報URL_std",
-  "詳細取得方式",
-  "部屋数" // ★Ver1.3.0 NEW: 既存列との位置ズレ事故を避けるため末尾に追加
+  "部屋数"
 ];
 
 const RAKUTEN_COMDESK_HEADER = [
@@ -203,7 +234,7 @@ const RAKUTEN_CONFIRM_KEYWORDS = [
   "ホテル"
 ];
 
-// ★Ver1.3.0で拡充: 全国チェーン系ホテル・旅館ブランドを追加。
+// 全国チェーン系ホテル・旅館ブランド。
 // 「電気切り替え条件でHP無料作成」の営業対象としては、すでに自社サイト・
 // 予約システム・マーケティング体制を持っているチェーン系は不向きなため、
 // 部屋数フィルタと二重で弾けるようにしておく（部屋数が未取得の場合の保険にもなる）。
@@ -237,7 +268,6 @@ const RAKUTEN_EXCLUDE_KEYWORDS = [
   "コンフォートホテル",
   "コンフォートイン",
   "ダイワロイネット",
-  // ↓ここからVer1.3.0で追加した全国チェーン
   "ホテルマイステイズ",
   "mystays",
   "変なホテル",
@@ -291,9 +321,9 @@ const RAKUTEN_EXCLUDE_KEYWORDS = [
   "第一ホテル",
   "ホテルレオパレス",
   "アルモニーアンブラッセ",
-  // ↓茨城県宿泊.csv（実データ）で確認した「〇〇ホテルグループ」表記のチェーン。
-  // 個別ブランド名を覚えるより、「ホテルグループ」という自己申告的な表記自体を
-  // 汎用の除外条件にした方が同種の中小チェーンを広く拾えるため追加。
+  // 「〇〇ホテルグループ」という自己申告的な表記自体を汎用の除外条件にした
+  // （実データ「BBHホテルグループ」で確認。個別ブランド名を覚えなくても
+  // 同種の中小チェーンを広く拾える）。
   "ホテルグループ",
   "bbhホテルグループ"
 ];
@@ -308,10 +338,8 @@ function rakutenSetupAll() {
   SpreadsheetApp.getUi().alert(
     "初期設定が完了しました。\n\n" +
     "スプレッドシートと同じDriveフォルダ内に、以下のフォルダを作成しました。\n\n" +
-    "・楽天_raw_CSV投入フォルダ\n" +
-    "・楽天_raw_処理済みフォルダ\n" +
-    "・楽天_詳細_CSV投入フォルダ\n" +
-    "・楽天_詳細_処理済みフォルダ\n" +
+    "・楽天_CSV投入フォルダ\n" +
+    "・楽天_処理済みフォルダ\n" +
     "・完成版CSVエクスポート"
   );
 }
@@ -321,8 +349,6 @@ function rakutenSetupSheets() {
 
   const initialSheets = [
     RAKUTEN_SHEETS.raw,
-    RAKUTEN_SHEETS.detailUrl,
-    RAKUTEN_SHEETS.detail,
     RAKUTEN_SHEETS.normalized,
     RAKUTEN_SHEETS.target,
     RAKUTEN_SHEETS.confirm,
@@ -331,23 +357,6 @@ function rakutenSetupSheets() {
   ];
 
   initialSheets.forEach(name => rktGetOrCreateSheet_(ss, name));
-
-  const detailSheet = ss.getSheetByName(RAKUTEN_SHEETS.detail);
-  if (detailSheet.getLastRow() === 0) {
-    detailSheet.getRange(1, 1, 1, 11).setValues([[
-      "施設名",
-      "住所ラベル",
-      "住所",
-      "TELラベル",
-      "電話番号",
-      "FAXラベル",
-      "FAX",
-      "交通アクセスラベル",
-      "交通アクセス",
-      "駐車場ラベル",
-      "駐車場"
-    ]]);
-  }
 }
 
 function rakutenCreateInputFolders_() {
@@ -355,105 +364,43 @@ function rakutenCreateInputFolders_() {
   const ssFile = DriveApp.getFileById(ss.getId());
   const parentFolder = ssFile.getParents().next();
 
-  rktGetOrCreateFolder_(parentFolder, RAKUTEN_FOLDER_NAMES.rawInput);
-  rktGetOrCreateFolder_(parentFolder, RAKUTEN_FOLDER_NAMES.rawProcessed);
-  rktGetOrCreateFolder_(parentFolder, RAKUTEN_FOLDER_NAMES.detailInput);
-  rktGetOrCreateFolder_(parentFolder, RAKUTEN_FOLDER_NAMES.detailProcessed);
+  rktGetOrCreateFolder_(parentFolder, RAKUTEN_FOLDER_NAMES.input);
+  rktGetOrCreateFolder_(parentFolder, RAKUTEN_FOLDER_NAMES.processed);
   rktGetOrCreateFolder_(parentFolder, RAKUTEN_FOLDER_NAMES.export);
 }
 
 // =====================================================================
-// 3. フォルダ投入型：一覧CSV取り込み・詳細URL一覧作成
+// 3. フォルダ投入型：CSV取り込み（投入フォルダは1つだけ）
 // =====================================================================
-function rakutenImportRawAndCreateDetailUrls() {
+function rakutenImportCsv() {
   rakutenCreateInputFolders_();
 
-  const imported = rakutenImportRawCsvFiles();
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const rawSheet = ss.getSheetByName(RAKUTEN_SHEETS.raw);
-  const rawValues = rawSheet ? rawSheet.getDataRange().getValues() : [];
-  const rawCount = Math.max(rawValues.length - 1, 0);
-
-  if (rawCount <= 0) {
-    SpreadsheetApp.getUi().alert(
-      "一覧CSVの取り込みができませんでした。\n\n" +
-      "楽天_raw_CSV投入フォルダにOctoparseの一覧CSVを入れてから再実行してください。"
-    );
-    return;
-  }
-
-  const rawHeader = rktNormalizeHeader_(rawValues[0]);
-  const rawRows = rawValues.slice(1);
-
-  // ★一体型CSV（住所・TEL・FAXが一覧の時点で取得済み）の場合は、
-  //   詳細URL一覧の作成・Octoparseタスク2は不要なのでスキップする。
-  if (rktRawHasEmbeddedDetail_(rawHeader, rawRows)) {
-    SpreadsheetApp.getUi().alert(
-      "一覧CSVの取り込みが完了しました。\n\n" +
-      `取り込みファイル数: ${imported.files}件\n` +
-      `一覧データ件数: ${rawCount}件\n\n` +
-      "このCSVには住所・電話番号（フィールド3・フィールド5）がすでに含まれている「一体型CSV」と判定しました。\n" +
-      "詳細URL一覧の作成やOctoparseタスク2は不要です。\n\n" +
-      "続けて「🚀 全自動処理」または「4. 楽天 一覧＋詳細を結合・正規化」を実行してください。"
-    );
-    return;
-  }
-
-  rakutenCreateDetailUrlList(true);
-
-  SpreadsheetApp.getUi().alert(
-    "一覧CSVの取り込みと詳細URL一覧の作成が完了しました。\n\n" +
-    `取り込みファイル数: ${imported.files}件\n` +
-    `一覧データ件数: ${rawCount}件\n\n` +
-    "次に「楽天_詳細URL一覧」タブの「基本情報URL_std」列をOctoparseタスク2に入れてください。"
-  );
-}
-
-function rakutenImportDetailOnly() {
-  rakutenCreateInputFolders_();
-
-  const imported = rakutenImportDetailCsvFiles();
+  const imported = rakutenImportCsvFiles();
 
   if (!imported || imported.rows === 0) {
     SpreadsheetApp.getUi().alert(
-      "詳細CSVの取り込みができませんでした。\n\n" +
-      "楽天_詳細_CSV投入フォルダにOctoparseタスク2のCSVを入れてから再実行してください。"
+      "CSVの取り込みができませんでした。\n\n" +
+      "楽天_CSV投入フォルダにOctoparseのCSVを入れてから再実行してください。"
     );
     return;
   }
 
   SpreadsheetApp.getUi().alert(
-    "詳細CSVの取り込みが完了しました。\n\n" +
+    "CSVの取り込みが完了しました。\n\n" +
     `取り込みファイル数: ${imported.files}件\n` +
-    `詳細データ件数: ${imported.rows}件\n\n` +
+    `データ件数: ${imported.rows}件\n\n` +
     "次に「🚀 全自動処理」を実行してください。"
   );
 }
 
-function rakutenImportRawCsvFiles() {
-  return rakutenImportCsvFilesToSheet_(
-    RAKUTEN_FOLDER_NAMES.rawInput,
-    RAKUTEN_FOLDER_NAMES.rawProcessed,
-    RAKUTEN_SHEETS.raw
-  );
-}
-
-function rakutenImportDetailCsvFiles() {
-  return rakutenImportCsvFilesToSheet_(
-    RAKUTEN_FOLDER_NAMES.detailInput,
-    RAKUTEN_FOLDER_NAMES.detailProcessed,
-    RAKUTEN_SHEETS.detail
-  );
-}
-
-function rakutenImportCsvFilesToSheet_(inputFolderName, processedFolderName, targetSheetName) {
+function rakutenImportCsvFiles() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const ssFile = DriveApp.getFileById(ss.getId());
   const parentFolder = ssFile.getParents().next();
 
-  const inputFolder = rktGetOrCreateFolder_(parentFolder, inputFolderName);
-  const processedFolder = rktGetOrCreateFolder_(parentFolder, processedFolderName);
-  const targetSheet = rktGetOrCreateSheet_(ss, targetSheetName);
+  const inputFolder = rktGetOrCreateFolder_(parentFolder, RAKUTEN_FOLDER_NAMES.input);
+  const processedFolder = rktGetOrCreateFolder_(parentFolder, RAKUTEN_FOLDER_NAMES.processed);
+  const targetSheet = rktGetOrCreateSheet_(ss, RAKUTEN_SHEETS.raw);
 
   const files = inputFolder.getFiles();
   const parsedFiles = [];
@@ -542,102 +489,31 @@ function rakutenImportCsvFilesToSheet_(inputFolderName, processedFolderName, tar
 }
 
 // =====================================================================
-// 4. 楽天_raw → 楽天_詳細URL一覧（二段階方式用。一体型CSVでは不要）
+// 4. 全自動処理
 // =====================================================================
-function rakutenCreateDetailUrlList(silent) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const rawSheet = ss.getSheetByName(RAKUTEN_SHEETS.raw);
-
-  if (!rawSheet) {
-    if (!silent) SpreadsheetApp.getUi().alert(`「${RAKUTEN_SHEETS.raw}」シートがありません。`);
-    return { count: 0 };
-  }
-
-  const values = rawSheet.getDataRange().getValues();
-
-  if (values.length <= 1) {
-    if (!silent) SpreadsheetApp.getUi().alert(`「${RAKUTEN_SHEETS.raw}」にデータがありません。`);
-    return { count: 0 };
-  }
-
-  const header = rktNormalizeHeader_(values[0]);
-  const rows = values.slice(1);
-
-  const output = [["一覧行番号", "施設名", "一覧URL", "基本情報URL_std"]];
-  const seen = new Set();
-
-  rows.forEach((row, i) => {
-    const name = rktGetValue_(header, row, RAKUTEN_RAW_NAME_COLUMNS);
-    const listUrl = rktGetValue_(header, row, RAKUTEN_RAW_URL_COLUMNS);
-    const stdUrl = rktConvertToStdUrl_(listUrl);
-
-    if (!stdUrl || seen.has(stdUrl)) return;
-
-    seen.add(stdUrl);
-    output.push([i + 2, name, listUrl, stdUrl]);
-  });
-
-  const sheet = rktGetOrCreateSheet_(ss, RAKUTEN_SHEETS.detailUrl);
-  rktWrite_(sheet, output);
-
-  if (!silent) {
-    SpreadsheetApp.getUi().alert(
-      `楽天詳細URL一覧を作成しました。\n作成件数: ${output.length - 1}件\n\n` +
-      `「${RAKUTEN_SHEETS.detailUrl}」の「基本情報URL_std」列をOctoparseタスク2に貼り付けてください。`
-    );
-  }
-
-  return { count: output.length - 1 };
-}
-
-// =====================================================================
-// 5. 全自動処理
-// =====================================================================
-function rakutenRunAllFromFolders() {
+// silent=true の場合はUIアラートを一切呼ばない。
+// 時間主導トリガー（rakutenRunAllFromFolderSilent経由）から呼ばれたときは
+// UIコンテキストが存在せず SpreadsheetApp.getUi() が例外になるため、
+// メニューから手動実行する場合(silent省略=false)とトリガーからの自動実行
+// (silent=true)を明示的に分けている。
+function rakutenRunAllFromFolder(silent) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
   rakutenCreateInputFolders_();
-
-  rakutenImportRawCsvFiles();
-  rakutenImportDetailCsvFiles();
+  rakutenImportCsvFiles();
 
   const rawSheet = ss.getSheetByName(RAKUTEN_SHEETS.raw);
-  const detailSheet = ss.getSheetByName(RAKUTEN_SHEETS.detail);
-
   const rawValues = rawSheet ? rawSheet.getDataRange().getValues() : [];
   const rawCount = Math.max(rawValues.length - 1, 0);
-  const detailCount = detailSheet ? Math.max(detailSheet.getLastRow() - 1, 0) : 0;
 
   if (rawCount <= 0) {
-    SpreadsheetApp.getUi().alert(
-      "一覧データがありません。\n\n" +
-      "楽天_raw_CSV投入フォルダにOctoparseの一覧CSVを入れてから再実行してください。"
-    );
+    if (!silent) {
+      SpreadsheetApp.getUi().alert(
+        "データがありません。\n\n" +
+        "楽天_CSV投入フォルダにOctoparseのCSVを入れてから再実行してください。"
+      );
+    }
     return;
-  }
-
-  const rawHeader = rktNormalizeHeader_(rawValues[0]);
-  const rawRows = rawValues.slice(1);
-  const hasEmbeddedDetail = rktRawHasEmbeddedDetail_(rawHeader, rawRows);
-
-  // 詳細CSVもなく、一覧側にも住所・電話番号が埋め込まれていない場合のみ、
-  // 「詳細CSVがまだ足りない」ケースとして案内して止める。
-  if (detailCount <= 0 && !hasEmbeddedDetail) {
-    rakutenCreateDetailUrlList(true);
-
-    SpreadsheetApp.getUi().alert(
-      "一覧CSVの取り込みは完了しましたが、詳細データ（住所・電話番号）がまだありません。\n\n" +
-      "・二段階方式の場合：「楽天_詳細URL一覧」タブの「基本情報URL_std」列をOctoparseタスク2に入れて、\n" +
-      "  詳細CSVを「楽天_詳細_CSV投入フォルダ」に入れてから、もう一度「🚀 全自動処理」を実行してください。\n" +
-      "・一体型CSV（Octoparse1本で住所・電話番号まで取得する）場合は、\n" +
-      "  一覧CSVに「フィールド3」（住所）「フィールド5」（電話番号）の列と値が含まれているか確認してください。"
-    );
-    return;
-  }
-
-  if (detailCount > 0) {
-    // 従来の二段階方式のときだけ詳細URL一覧を作っておく（任意・確認用）
-    rakutenCreateDetailUrlList(true);
   }
 
   rakutenNormalizeAndMerge(true);
@@ -656,31 +532,35 @@ function rakutenRunAllFromFolders() {
   const excludeCount = excludeSheet ? Math.max(excludeSheet.getLastRow() - 1, 0) : 0;
   const duplicateCount = duplicateSheet ? Math.max(duplicateSheet.getLastRow() - 1, 0) : 0;
 
-  SpreadsheetApp.getUi().alert(
-    "楽天宿泊施設リストの全自動処理が完了しました。\n\n" +
-    `処理方式: ${hasEmbeddedDetail && detailCount <= 0 ? "一体型CSV（一覧に住所・電話番号込み）" : "二段階結合（一覧＋詳細CSV）"}\n` +
-    `一覧データ: ${rawCount}件\n` +
-    `詳細データ: ${detailCount}件\n\n` +
-    `営業対象: ${targetCount}件\n` +
-    `要確認: ${confirmCount}件\n` +
-    `除外: ${excludeCount}件\n` +
-    `重複: ${duplicateCount}件\n\n` +
-    "04_SALES_宿泊施設 / 市区町村別タブ / 完成版CSVエクスポートを確認してください。"
+  Logger.log(
+    `[楽天] 全自動処理完了: 取り込み${rawCount}件 / 営業対象${targetCount}件 / ` +
+    `要確認${confirmCount}件 / 除外${excludeCount}件 / 重複${duplicateCount}件`
   );
+
+  if (!silent) {
+    SpreadsheetApp.getUi().alert(
+      "楽天宿泊施設リストの全自動処理が完了しました。\n\n" +
+      `取り込みデータ: ${rawCount}件\n\n` +
+      `営業対象: ${targetCount}件\n` +
+      `要確認: ${confirmCount}件\n` +
+      `除外: ${excludeCount}件\n` +
+      `重複: ${duplicateCount}件\n\n` +
+      "04_SALES_宿泊施設 / 市区町村別タブ / 完成版CSVエクスポートを確認してください。"
+    );
+  }
 }
 
-function rakutenRunAfterDetailExtraction() {
-  rakutenNormalizeAndMerge();
-  rakutenSplitClassifySheets();
-  rakutenCreateSalesSheets();
-  rakutenExportSalesCsvFiles();
+// 後方互換用エイリアス：Ver1.3.0までは関数名が複数形「rakutenRunAllFromFolders」だった。
+// スプレッドシート上のボタン（図形描画）やトリガーが古い関数名のまま紐付いている場合、
+// Ver2.0.0で単数形「rakutenRunAllFromFolder」に変更したことで
+// 「スクリプト関数が見つかりません」エラーになるため、旧名でも動くようにしておく。
+// ボタンを付け直す場合は新しい方（rakutenRunAllFromFolder）を割り当ててよい。
+function rakutenRunAllFromFolders() {
+  return rakutenRunAllFromFolder();
 }
 
 // =====================================================================
-// 6. 楽天_raw (+ 楽天_詳細抽出) → 楽天_正規化
-//    ・楽天_詳細抽出にデータがあれば、従来通りURL/施設名で突き合わせる「二段階結合」。
-//    ・楽天_詳細抽出が無くても、楽天_rawに住所・電話番号列（フィールド3・フィールド5）が
-//      埋まっていれば、突き合わせ不要の「一体型結合」を自動で行う。
+// 5. 楽天_raw → 楽天_正規化
 // =====================================================================
 function rakutenNormalizeAndMerge(silent) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -701,148 +581,22 @@ function rakutenNormalizeAndMerge(silent) {
   const rawHeader = rktNormalizeHeader_(rawValues[0]);
   const rawRows = rawValues.slice(1);
 
-  const detailSheet = ss.getSheetByName(RAKUTEN_SHEETS.detail);
-  const detailValues = detailSheet ? detailSheet.getDataRange().getValues() : [];
-
-  let outputRows;
-  let modeLabel;
-
-  if (detailValues.length > 1) {
-    // ---- 二段階結合（従来方式）----
-    const detailHeader = rktNormalizeHeader_(detailValues[0]);
-    const detailRows = detailValues.slice(1);
-    outputRows = rktBuildNormalizedRowsTwoStage_(rawHeader, rawRows, detailHeader, detailRows);
-    modeLabel = "二段階結合";
-  } else if (rktRawHasEmbeddedDetail_(rawHeader, rawRows)) {
-    // ---- 一体型結合（新方式：一覧CSVに住所・電話番号込み）----
-    outputRows = rktBuildNormalizedRowsCombined_(rawHeader, rawRows);
-    modeLabel = "一体型CSV結合";
-  } else {
-    if (!silent) {
-      SpreadsheetApp.getUi().alert(
-        "詳細データ（住所・電話番号）が見つかりません。\n\n" +
-        "・二段階方式の場合は「楽天_詳細_CSV投入フォルダ」に詳細CSVを入れてください。\n" +
-        "・一体型CSV（Octoparse1本で住所・電話番号まで取得したCSV）の場合は、\n" +
-        "  「フィールド3」（住所）・「フィールド5」（電話番号）列が含まれているか確認してください。"
-      );
-    }
-    return { count: 0 };
-  }
+  const outputRows = rktBuildNormalizedRows_(rawHeader, rawRows);
 
   const sheet = rktGetOrCreateSheet_(ss, RAKUTEN_SHEETS.normalized);
   rktWrite_(sheet, [RAKUTEN_NORMALIZED_HEADER].concat(outputRows));
 
   if (!silent) {
     SpreadsheetApp.getUi().alert(
-      `楽天一覧＋詳細データの結合・正規化が完了しました（${modeLabel}）。\n出力件数: ${outputRows.length}件`
+      `楽天データの正規化が完了しました。\n出力件数: ${outputRows.length}件`
     );
   }
 
   return { count: outputRows.length };
 }
 
-// ---- 二段階結合（従来方式のロジックをそのまま関数化）----
-function rktBuildNormalizedRowsTwoStage_(rawHeader, rawRows, detailHeader, detailRows) {
-  const detailIndex = rktBuildDetailIndex_(detailHeader, detailRows);
-  const outputRows = [];
-
-  rawRows.forEach((rawRow, i) => {
-    const listName = rktGetValue_(rawHeader, rawRow, RAKUTEN_RAW_NAME_COLUMNS);
-    const listUrl = rktGetValue_(rawHeader, rawRow, RAKUTEN_RAW_URL_COLUMNS);
-    const stdUrl = rktConvertToStdUrl_(listUrl);
-
-    const detail = rktFindDetail_(detailIndex, stdUrl, listName, i);
-    const detailData = detail ? rktNormalizeDetailRow_(detailHeader, detail.row) : {};
-
-    const name = detailData.name || listName;
-    const address = rktCleanAddress_(detailData.address);
-    const parsed = rktParseAddress_(address);
-
-    const description = rktGetValue_(rawHeader, rawRow, ["htlspecial", "施設説明", "説明"]);
-    const listAccess = rktGetValue_(rawHeader, rawRow, ["htlaccess", "アクセス"]);
-    const access = detailData.access || listAccess;
-
-    // 都道府県＋大エリア列（例:「千葉県 銚子・旭・九十九里・東金・茂原」）があれば優先的に使う
-    const prefAreaRaw = rktGetValue_(rawHeader, rawRow, ["都道府県"]);
-    const prefArea = rktParsePrefArea_(prefAreaRaw);
-    const area = prefArea.area || rktJudgeLargeArea_(name, address, access, description);
-
-    const review = rktGetValue_(rawHeader, rawRow, ["cstmrevl", "口コミ", "レビュー"]);
-    const price = rktGetValue_(rawHeader, rawRow, ["価格20", "価格", "料金"]);
-    const imageUrl = rktGetValue_(rawHeader, rawRow, ["学歴", "画像URL", "画像URL1"]);
-
-    const tags = [
-      rktGetValue_(rawHeader, rawRow, ["内容16"]),
-      rktGetValue_(rawHeader, rawRow, ["内容17"]),
-      rktGetValue_(rawHeader, rawRow, ["内容18"]),
-      rktGetValue_(rawHeader, rawRow, ["内容19"]),
-      rktGetValue_(rawHeader, rawRow, ["タグ15"])
-    ].filter(Boolean).join(" / ");
-
-    const genre = rktJudgeLodgingGenre_(name, description, tags);
-    const phoneDisplay = rktNormalizePhoneDisplay_(detailData.phone);
-    const faxDisplay = rktIsDummyFax_(detailData.fax) ? "" : rktNormalizePhoneDisplay_(detailData.fax);
-
-    // ★Ver1.3.0 NEW: 部屋数は一覧側・詳細側どちらに来ても拾えるよう両方見る
-    // （一覧側の値を優先。無ければ詳細側）。
-    const roomCountRaw = rktGetValue_(rawHeader, rawRow, RAKUTEN_ROOM_COUNT_COLUMNS)
-      || rktGetValue_(detailHeader, detail ? detail.row : [], RAKUTEN_ROOM_COUNT_COLUMNS);
-    const roomCount = rktParseRoomCount_(roomCountRaw);
-
-    let salesJudge = rktJudgeRakutenSalesTarget_(name, genre, description, tags, address, roomCount);
-
-    const missingReasons = [];
-    if (!phoneDisplay) missingReasons.push("電話番号なし");
-    if (!address) missingReasons.push("住所なし");
-
-    if (salesJudge.status !== "除外" && missingReasons.length > 0) {
-      salesJudge = {
-        status: "要確認",
-        reason: salesJudge.reason + " / " + missingReasons.join(" / ")
-      };
-    }
-
-    outputRows.push([
-      name,
-      genre,
-      parsed.pref || prefArea.pref,
-      parsed.city,
-      area,
-      parsed.zip,
-      address,
-      phoneDisplay,
-      faxDisplay,
-      stdUrl || listUrl,
-      "楽天トラベル",
-      "0",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      description,
-      access,
-      review,
-      price,
-      tags,
-      imageUrl,
-      detailData.parking || "",
-      salesJudge.status,
-      salesJudge.reason,
-      "",
-      listUrl,
-      stdUrl,
-      detail ? detail.method : "未結合",
-      roomCount === null ? "" : String(roomCount) // ★Ver1.3.0 NEW
-    ]);
-  });
-
-  return outputRows;
-}
-
-// ---- 一体型結合（新方式：突き合わせ不要。1行の中に住所・電話番号が全部入っている）----
-function rktBuildNormalizedRowsCombined_(rawHeader, rawRows) {
+// 楽天_raw（1行1施設。住所・電話番号・部屋数まで取得済みのCSV）→ 正規化済み行の配列。
+function rktBuildNormalizedRows_(rawHeader, rawRows) {
   const outputRows = [];
 
   rawRows.forEach(rawRow => {
@@ -856,9 +610,9 @@ function rktBuildNormalizedRowsCombined_(rawHeader, rawRows) {
 
     // 住所：Octoparseの「フィールドN」はラベル/値が交互に並ぶ形式で、実データ確認の結果
     // フィールド2="住所"(ラベル)→フィールド3=値、という並びだった（茨城県宿泊.csvで確認）。
-    // ただし列番号はOctoparseのタスク設定によりズレる可能性があるため、
+    // 列番号はOctoparseのタスク設定によりズレる可能性があるため、
     // まずラベル文字列で探し（rktFindFieldByLabel_）、見つからない場合のみ
-    // 従来の固定列番号候補にフォールバックする。
+    // 固定列番号候補にフォールバックする。
     const addressRaw = rktFindFieldByLabel_(rawHeader, rawRow, ["住所"])
       || rktGetValue_(rawHeader, rawRow, ["フィールド3", "住所"]);
     const address = rktCleanAddress_(addressRaw);
@@ -873,32 +627,33 @@ function rktBuildNormalizedRowsCombined_(rawHeader, rawRows) {
       || rktGetValue_(rawHeader, rawRow, ["フィールド5", "電話番号", "TEL"]);
     const phone = rktNormalizePhoneDisplay_(phoneRaw);
 
-    // FAX：実データ（茨城県宿泊.csv）にはFAXのラベル/値ペアが存在せず、
-    // フィールド6/7は「総部屋数」（後述の部屋数）に使われていることが判明したため、
-    // フィールド7を決め打ちでFAXとして読むのをやめ、ラベル文字列一致でのみ拾うようにした。
-    // FAXラベルが存在しないCSVでは空欄になる（＝実態通り）。
-    const faxRaw = rktFindFieldByLabel_(rawHeader, rawRow, ["FAX"]);
+    // FAX：Octoparseのフィールドラベル形式（実データでは存在しないケースが多い）に加えて、
+    // 「FAX」という素の列名も候補にした（スクレイパー等、自前でCSVを組み立てる側が
+    // フィールドN形式を使わずそのまま"FAX"列を出力してくるケースに対応するため）。
+    const faxRaw = rktFindFieldByLabel_(rawHeader, rawRow, ["FAX"])
+      || rktGetValue_(rawHeader, rawRow, ["FAX"]);
     const fax = rktIsDummyFax_(faxRaw) ? "" : rktNormalizePhoneDisplay_(faxRaw);
 
     const description = rktGetValue_(rawHeader, rawRow, ["hotelcharacter", "施設説明", "説明"]);
     // 価格：実データでは「価格」列自体は "[最安料金（目安）]" という見出し文字列が入っており、
     // 実際の金額は価格1（例:"3,273円～"）・価格2（税込表記）に入っていたため、
-    // 価格1・価格2を優先するよう修正（茨城県宿泊.csvで確認）。
+    // 価格1・価格2を優先する（茨城県宿泊.csvで確認）。
     const price = rktGetValue_(rawHeader, rawRow, ["価格1", "価格2", "incldtax", "plnprc", "料金"]);
     const review = rktGetValue_(rawHeader, rawRow, ["hotelrating", "cstmrevl", "口コミ"]);
     const imageUrl = rktGetValue_(rawHeader, rawRow, ["画像URL", "画像URL1"]);
     // タグ：実データにはmoreplan3やタグ15に相当する列がなく、代わりに"planoutline"
     // （プラン説明文）に「グランピング」等のジャンルを示す語が入ることがあったため、
-    // ジャンル・営業対象判定用のテキストにのみ含める（表示用タグ列としては汚いので出さない）
+    // ジャンル・営業対象判定用のテキストにのみ含める（表示用タグ列としては汚いので出さない）。
+    // "設備タグ"は自前スクレイパー側が直接出してくる場合の素の列名候補として追加。
     const planOutlineRaw = rktGetValue_(rawHeader, rawRow, ["planoutline"]);
-    const tags = rktGetValue_(rawHeader, rawRow, ["moreplan3", "タグ15"]);
+    const tags = rktGetValue_(rawHeader, rawRow, ["moreplan3", "タグ15", "設備タグ"]);
     const judgeText = tags + " " + rktNormalizeText_(planOutlineRaw).slice(0, 200);
 
     const genre = rktJudgeLodgingGenre_(name, description, judgeText);
 
-    // ★Ver1.3.0: 部屋数（客室数）。実データではフィールド6="総部屋数"(ラベル)→
+    // 部屋数（客室数）。実データではフィールド6="総部屋数"(ラベル)→
     // フィールド7=値（例:"65室"）という並びだったため、まずラベル一致で探し、
-    // 見つからなければ従来の候補名リスト（RAKUTEN_ROOM_COUNT_COLUMNS）にフォールバックする。
+    // 見つからなければ候補名リスト（RAKUTEN_ROOM_COUNT_COLUMNS）にフォールバックする。
     const roomCountRaw = rktFindFieldByLabel_(rawHeader, rawRow, ["総部屋数", "部屋数", "客室数", "室数"])
       || rktGetValue_(rawHeader, rawRow, RAKUTEN_ROOM_COUNT_COLUMNS);
     const roomCount = rktParseRoomCount_(roomCountRaw);
@@ -947,8 +702,7 @@ function rktBuildNormalizedRowsCombined_(rawHeader, rawRows) {
       "",
       listUrl,
       stdUrl,
-      "一体型CSV結合",
-      roomCount === null ? "" : String(roomCount) // ★Ver1.3.0 NEW
+      roomCount === null ? "" : String(roomCount)
     ]);
   });
 
@@ -956,7 +710,7 @@ function rktBuildNormalizedRowsCombined_(rawHeader, rawRows) {
 }
 
 // =====================================================================
-// 7. 楽天_正規化 → 営業対象/要確認/除外/重複/エリア別
+// 6. 楽天_正規化 → 営業対象/要確認/除外/重複/エリア別
 // =====================================================================
 function rakutenSplitClassifySheets(silent) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1067,7 +821,7 @@ function rakutenSplitClassifySheets(silent) {
 }
 
 // =====================================================================
-// 8. 楽天_営業対象 → 04_SALES_宿泊施設 / 市区町村別
+// 7. 楽天_営業対象 → 04_SALES_宿泊施設 / 市区町村別
 // =====================================================================
 function rakutenCreateSalesSheets(silent) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1128,7 +882,7 @@ function rakutenCreateSalesSheets(silent) {
 }
 
 // =====================================================================
-// 9. 04_SALES_宿泊系 → Drive CSV出力
+// 8. 04_SALES_宿泊系 → Drive CSV出力
 // =====================================================================
 function rakutenExportSalesCsvFiles(silent) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1172,87 +926,7 @@ function rakutenExportSalesCsvFiles(silent) {
 }
 
 // =====================================================================
-// 10. 詳細データ結合系ヘルパー（二段階結合方式で使用）
-// =====================================================================
-function rktBuildDetailIndex_(detailHeader, detailRows) {
-  const byUrl = {};
-  const byName = {};
-  const byOrder = [];
-
-  detailRows.forEach((row, i) => {
-    const detail = rktNormalizeDetailRow_(detailHeader, row);
-    const stdUrl = rktConvertToStdUrl_(detail.url);
-    const cleanName = rktSimplifyName_(detail.name);
-
-    if (stdUrl) {
-      byUrl[stdUrl] = { row, index: i, method: "URL結合" };
-    }
-
-    if (cleanName) {
-      byName[cleanName] = { row, index: i, method: "施設名結合" };
-    }
-
-    byOrder.push({ row, index: i, method: "行順結合" });
-  });
-
-  return { byUrl, byName, byOrder };
-}
-
-function rktFindDetail_(detailIndex, stdUrl, name, rawIndex) {
-  if (stdUrl && detailIndex.byUrl[stdUrl]) {
-    return detailIndex.byUrl[stdUrl];
-  }
-
-  const cleanName = rktSimplifyName_(name);
-
-  if (cleanName && detailIndex.byName[cleanName]) {
-    return detailIndex.byName[cleanName];
-  }
-
-  return detailIndex.byOrder[rawIndex] || null;
-}
-
-function rktNormalizeDetailRow_(header, row) {
-  const block = rktGetValue_(header, row, ["基本情報ブロック", "テキスト", "Text", "text"]);
-  const parsedFromBlock = rktParseBasicInfoBlock_(block);
-
-  const name = rktGetValue_(header, row, ["施設名", "店名", "ホテル名", "フィールド1", "フィールド 1", "タイトル"]);
-  const address = rktGetValue_(header, row, ["住所", "フィールド3", "フィールド 3"]) || parsedFromBlock.address;
-  const phone = rktGetValue_(header, row, ["電話番号", "TEL", "Tel", "tel", "フィールド5", "フィールド 5"]) || parsedFromBlock.phone;
-  const fax = rktGetValue_(header, row, ["FAX", "Fax", "fax", "フィールド7", "フィールド 7"]) || parsedFromBlock.fax;
-  const access = rktGetValue_(header, row, ["交通アクセス", "アクセス", "フィールド9", "フィールド 9"]) || parsedFromBlock.access;
-  const parking = rktGetValue_(header, row, ["駐車場", "フィールド11", "フィールド 11"]) || parsedFromBlock.parking;
-  const url = rktGetValue_(header, row, ["楽天URL", "URL", "WebページURL", "ページURL", "Page URL", "ページのURL"]);
-
-  return { name, address, phone, fax, access, parking, url };
-}
-
-function rktParseBasicInfoBlock_(block) {
-  const text = rktText_(block).replace(/\r?\n/g, " ").replace(/\s+/g, " ");
-  const result = { address: "", phone: "", fax: "", access: "", parking: "" };
-
-  if (!text) return result;
-
-  const addressMatch = text.match(/住所\s*(.*?)(?:\s*(?:TEL|電話番号|FAX|交通アクセス|駐車場)\s*)/i);
-  if (addressMatch) result.address = addressMatch[1];
-
-  const phoneMatch = text.match(/(?:TEL|電話番号)\s*([0-9０-９\-ー−―]{8,})/i);
-  if (phoneMatch) result.phone = phoneMatch[1];
-
-  const faxMatch = text.match(/FAX\s*([0-9０-９\-ー−―]{8,})/i);
-  if (faxMatch) result.fax = faxMatch[1];
-
-  const accessMatch = text.match(/交通アクセス\s*(.*?)(?:\s*駐車場\s*|$)/);
-  if (accessMatch) result.access = accessMatch[1];
-
-  const parkingMatch = text.match(/駐車場\s*(.*)$/);
-  if (parkingMatch) result.parking = parkingMatch[1];
-
-  return result;
-}
-
-// =====================================================================
-// 11. 判定系ヘルパー
+// 9. 判定系ヘルパー
 // =====================================================================
 function rktJudgeLodgingGenre_(name, description, tags) {
   const text = rktNormalizeText_([name, description, tags].join(" "));
@@ -1272,7 +946,6 @@ function rktJudgeLodgingGenre_(name, description, tags) {
   return "その他宿泊施設";
 }
 
-// ★Ver1.3.0: roomCount引数を追加。
 // 判定の優先順位: ①チェーン除外キーワード → ②部屋数しきい値 → ③営業対象キーワード
 // → ④要確認キーワード → ⑤判定不能（要確認）。
 // 部屋数を②に置いたのは、「民宿」等の営業対象キーワードに一致していても、
@@ -1342,9 +1015,8 @@ function rktParsePrefArea_(text) {
   return { pref: "", area: t };
 }
 
-// ★Ver1.3.0 NEW: 「15室」「全15室」「客室数：20」「20部屋」等の文字列から
-// 数字部分だけを取り出す。数字が取れなければnullを返す（＝部屋数不明。
-// 部屋数フィルタは適用せず、他の判定基準に委ねる）。
+// 「15室」「全15室」「客室数：20」「20部屋」等の文字列から数字部分だけを取り出す。
+// 数字が取れなければnullを返す（＝部屋数不明。部屋数フィルタは適用せず、他の判定基準に委ねる）。
 function rktParseRoomCount_(value) {
   const text = rktText_(value);
   if (!text) return null;
@@ -1359,7 +1031,7 @@ function rktParseRoomCount_(value) {
 }
 
 // =====================================================================
-// 12. システム投入CSV生成ヘルパー
+// 10. システム投入CSV生成ヘルパー
 // =====================================================================
 function rktBuildComdeskRow_(header, row) {
   const name = rktGetValue_(header, row, ["店名"]);
@@ -1376,7 +1048,7 @@ function rktBuildComdeskRow_(header, row) {
   const genre = rktGetValue_(header, row, ["宿泊ジャンル"]);
   const price = rktGetValue_(header, row, ["料金"]);
   const review = rktGetValue_(header, row, ["口コミ"]);
-  const roomCount = rktGetValue_(header, row, ["部屋数"]); // ★Ver1.3.0 NEW
+  const roomCount = rktGetValue_(header, row, ["部屋数"]);
   const cleanPhone = rktNormalizePhoneDigits_(phone);
 
   const addr1 = rktBuildAddress1_(pref, city, address);
@@ -1386,7 +1058,7 @@ function rktBuildComdeskRow_(header, row) {
   const memoParts = [];
 
   if (genre) memoParts.push("宿泊ジャンル: " + genre);
-  if (roomCount) memoParts.push("部屋数: " + roomCount + "室"); // ★Ver1.3.0 NEW
+  if (roomCount) memoParts.push("部屋数: " + roomCount + "室");
   if (description) memoParts.push("施設説明: " + description);
   if (access) memoParts.push("アクセス: " + access);
   if (parking) memoParts.push("駐車場: " + parking);
@@ -1445,7 +1117,7 @@ function rktBuildAddress1_(pref, city, address) {
 }
 
 // =====================================================================
-// 13. 汎用ヘルパー
+// 11. 汎用ヘルパー
 // =====================================================================
 function rktConvertToStdUrl_(url) {
   let cleanUrl = rktText_(url).split("?")[0].replace(/\/$/, "");
@@ -1528,27 +1200,6 @@ function rktIsDummyFax_(fax) {
   return false;
 }
 
-// 楽天_raw シートに、住所・電話番号がすでに埋め込まれた「一体型CSV」かどうかを判定する。
-// フィールド3（住所）・フィールド5（電話番号）に相当する列があり、
-// かつ実際に1件でも値が入っていれば「一体型」と判定する。
-function rktRawHasEmbeddedDetail_(header, rows) {
-  const hasAddressCol = header.indexOf("フィールド3") !== -1 || header.indexOf("住所") !== -1;
-  const hasPhoneCol = header.indexOf("フィールド5") !== -1 ||
-    header.indexOf("電話番号") !== -1 ||
-    header.indexOf("TEL") !== -1;
-
-  if (!hasAddressCol || !hasPhoneCol) return false;
-
-  return rows.some(row => {
-    const phone = rktFindFieldByLabel_(header, row, ["TEL", "電話番号"])
-      || rktGetValue_(header, row, ["フィールド5", "電話番号", "TEL"]);
-    const address = rktFindFieldByLabel_(header, row, ["住所"])
-      || rktGetValue_(header, row, ["フィールド3", "住所"]);
-    return !!(phone || address);
-  });
-}
-
-// ★Ver1.3.0 NEW（茨城県宿泊.csvの実データで判明した構造への対応）：
 // Octoparseの「フィールドN」列は、ラベルと値が交互に並ぶ形式で出力されることがある
 // （例: フィールド2="住所"(ラベル文字列そのもの), フィールド3="〒300-2706茨城県..."(実際の値)、
 //       フィールド6="総部屋数"(ラベル), フィールド7="65室"(実際の値)）。
@@ -1679,7 +1330,7 @@ function rktArrayToCsv_(array) {
 
 
 // =====================================================================
-// 14. 地域別営業リスト件数サマリー
+// 12. 地域別営業リスト件数サマリー
 // =====================================================================
 
 /**
