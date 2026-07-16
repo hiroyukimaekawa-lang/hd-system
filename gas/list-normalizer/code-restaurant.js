@@ -519,6 +519,40 @@ const HD_TARGET_GENRES = [
   "ラーメン"
 ];
 
+// =====================================================================
+// 04_SALESタブの統合ルール（Ver9.9.2で追加）
+// 重複排除後、単体では件数が少なすぎて架電リストとして使いにくいジャンルを、
+// 近い業態の親ジャンルタブへ合流させる。統合するのは「04_SALESタブの
+// 出力先」のみで、「ジャンル」「正規化ジャンル」列や00_件数サマリーの
+// ジャンル×時間帯クロス集計は従来通り細かい粒度のまま残す
+// （架電時に「このお店は元々焼き鳥だった」等の判断材料として使えるように）。
+//
+//   居酒屋 ← 焼き鳥、焼肉、お好み焼き
+//   和食   ← 蕎麦・うどん、寿司
+//   テイクアウト専門店 ← ハンバーガー（弁当は既存のHD_GENRE_MAP/
+//                        NAME_GENRE_PRIORITY_LISTで正規化ジャンルの
+//                        時点で既にテイクアウト専門店へ統合済み）
+// =====================================================================
+const HD_SALES_TAB_MERGE_MAP = {
+  "焼き鳥": "居酒屋",
+  "焼肉": "居酒屋",
+  "お好み焼き": "居酒屋",
+  "蕎麦・うどん": "和食",
+  "寿司": "和食",
+  "ハンバーガー": "テイクアウト専門店"
+};
+
+// 細かいジャンル → 実際に04_SALESタブが作られる「統合後」ジャンル名に変換する
+function getSalesTabGenre(genre) {
+  return HD_SALES_TAB_MERGE_MAP[genre] || genre;
+}
+
+// 04_SALESタブとして実際に生成される統合後ジャンルの一覧
+// （HD_TARGET_GENRESから、統合先に吸収される側のジャンルを除いたもの）
+const HD_SALES_TAB_GENRES = HD_TARGET_GENRES.filter(
+  genre => !Object.prototype.hasOwnProperty.call(HD_SALES_TAB_MERGE_MAP, genre)
+);
+
 const CAFE_KEYWORDS = [
   "カフェ", "Cafe", "CAFE", "cafe", "喫茶", "珈琲", "コーヒー", "coffee", "Coffee", "COFFEE",
   "コーヒーショップ", "カフェテリア", "ドッグカフェ", "コーヒー焙煎所"
@@ -779,15 +813,20 @@ function executeGenerateSalesGenreSheets() {
   const finalHeader = getComdeskHeader();
 
   const genreContainers = {};
-  HD_TARGET_GENRES.forEach(genre => {
+  HD_SALES_TAB_GENRES.forEach(genre => {
     genreContainers[genre] = [];
   });
 
   rows.forEach(row => {
     if (!isComdeskTargetRow(header, row)) return;
     const genre = getFinalHdGenre(header, row);
-    if (!genre || !genreContainers[genre]) return;
-    genreContainers[genre].push(buildComdeskRow(header, row));
+    if (!genre) return;
+    // 焼き鳥/焼肉/お好み焼き→居酒屋、蕎麦・うどん/寿司→和食、
+    // ハンバーガー→テイクアウト専門店のように、細分ジャンルを
+    // 04_SALESタブの統合先ジャンルへ変換してから振り分ける
+    const tabGenre = getSalesTabGenre(genre);
+    if (!genreContainers[tabGenre]) return;
+    genreContainers[tabGenre].push(buildComdeskRow(header, row));
   });
 
   const sheetsToDelete = ss.getSheets().filter(s => s.getName().startsWith("04_SALES_"));
@@ -795,7 +834,7 @@ function executeGenerateSalesGenreSheets() {
     if (ss.getSheets().length > 1) ss.deleteSheet(s);
   });
 
-  HD_TARGET_GENRES.forEach(genre => {
+  HD_SALES_TAB_GENRES.forEach(genre => {
     const genreRows = genreContainers[genre];
     if (!genreRows || genreRows.length === 0) return;
     ss.toast(`シート「04_SALES_${genre}」を生成中...`, "📊 ジャンル別タブ生成");
@@ -882,9 +921,14 @@ function executeCountSummary() {
     "04_取得失敗": countRows("04_取得失敗")
   };
 
+  // 04_SALESタブは統合後ジャンル（HD_SALES_TAB_GENRES）単位でしか
+  // 生成されないため、件数サマリーもそれに合わせて統合後の単位で数える
+  // （焼き鳥/焼肉/お好み焼き→居酒屋、蕎麦・うどん/寿司→和食、
+  // ハンバーガー→テイクアウト専門店に統合済み。内訳が知りたい場合は
+  // 下のジャンル×時間帯クロス集計を参照）
   const genreCounts = {};
   let total営業対象InGenres = 0;
-  HD_TARGET_GENRES.forEach(genre => {
+  HD_SALES_TAB_GENRES.forEach(genre => {
     const count = countRows("04_SALES_" + genre);
     genreCounts[genre] = count;
     total営業対象InGenres += count;
@@ -895,8 +939,8 @@ function executeCountSummary() {
   rows.push(["── 全体 ──", ""]);
   Object.keys(coreCounts).forEach(key => rows.push([key, coreCounts[key]]));
   rows.push(["", ""]);
-  rows.push(["── 04_SALES_ジャンル別 ──", ""]);
-  HD_TARGET_GENRES.forEach(genre => rows.push(["04_SALES_" + genre, genreCounts[genre]]));
+  rows.push(["── 04_SALES_ジャンル別（統合後） ──", ""]);
+  HD_SALES_TAB_GENRES.forEach(genre => rows.push(["04_SALES_" + genre, genreCounts[genre]]));
   rows.push(["", ""]);
   rows.push(["ジャンル別合計（01_営業対象と一致するはず）", total営業対象InGenres]);
   rows.push(["更新日時", Utilities.formatDate(new Date(), "JST", "yyyy-MM-dd HH:mm:ss")]);
@@ -1032,6 +1076,7 @@ function fixKnownChainMasterGaps() {
     ["回転寿司 やまと", "回転寿司 やまと", "飲食", true, "回転寿司チェーン。「やまと」単独だと一般的すぎて誤爆するため店名全体をキーワードに設定"],
     ["モスバーガー", "モスバーガー", "飲食", true, "ハンバーガーチェーン。木更津市データで未除外を確認したため追加"],
     ["バーガーキング", "BURGER KING", "飲食", true, "ハンバーガーチェーン（英語表記）。木更津市データで未除外を確認したため追加"],
+    ["バーガーキング", "バーガーキング", "飲食", true, "日本語表記対策（登録済みキーワード「BURGER KING」が実店名「バーガーキング 土浦神立店」のようなカタカナ表記に一致しないため追加。土浦市データで未除外を確認）"],
     ["シャトレーゼ", "シャトレーゼ", "飲食", true, "洋菓子チェーン。木更津市データで未除外を確認したため追加"],
     ["ガスト", "ガスト", "飲食", true, "ファミレスチェーン。印西市データで未除外を確認したため追加"],
     ["ピザハット", "ピザハット", "飲食", true, "ピザ宅配チェーン。印西市データで未除外を確認したため追加"],
@@ -1305,7 +1350,12 @@ function normalizeSystemGenre(genre, searchGenre, sourceGenre, storeName) {
 }
 
 function judgeFacilityStatus(storeName, address, genre) {
-  const haystack = [storeName, address, genre].map(textValue).join(" ");
+  // ★修正: 住所の階数表記が全角数字（例:「土浦ピアタウン ２F」）の場合、
+  // FACILITY_REVIEW_KEYWORDSの「2F」（半角）に一致せず素通りしていた不具合を
+  // 確認したため、NFKC正規化してから照合する（全角数字・全角英字を半角に統一）。
+  // 土浦市データで「ピアタウンニューシャルム」（テナントビル2F）が対象扱いに
+  // なっていたケースで発覚。
+  const haystack = [storeName, address, genre].map(textValue).join(" ").normalize("NFKC");
   const excludeKeyword = FACILITY_EXCLUDE_KEYWORDS.find(keyword => haystack.indexOf(keyword) !== -1);
   if (excludeKeyword) return { status: "除外", reason: "完全除外キーワード一致: " + excludeKeyword };
   const reviewKeyword = FACILITY_REVIEW_KEYWORDS.find(keyword => haystack.indexOf(keyword) !== -1);
