@@ -88,6 +88,7 @@ function buildEnv(options) {
     exported: [],
     alerts: [],
     logs: [],
+    sleeps: 0,
     fetchHandler: options.fetchHandler || (() => { throw new Error("fetchHandler not set"); })
   };
 
@@ -144,7 +145,7 @@ function buildEnv(options) {
       }
     },
     Utilities: {
-      sleep: () => {},
+      sleep: () => { env.sleeps++; },
       parseCsv: () => [],
       newBlob: (content, type, name) => ({ content, type, name }),
       formatDate: (d, tz, fmt) => (fmt === "yyyyMMdd" ? "20260721" : "2026-07-21 00:00:00")
@@ -355,6 +356,122 @@ function checkTrue(label, cond) { check(label, !!cond, true); }
   const reviewRow = review.data[1];
   checkTrue("T6: 判定理由に住所未確認を含む", String(reviewRow[6]).indexOf("住所を確認できず") !== -1);
   checkTrue("T6: 候補側店名に対象の値を無条件代入しない（住所欄が空）", reviewRow[4] === "");
+})();
+
+// ================================================================
+// テスト7: 401/403以外の一般例外でもCSVを出力しない（Ver10.0.1最終修正）
+// ================================================================
+(function () {
+  const env = buildEnv({});
+  env.fetchHandler = successFetchHandler;
+  // 検索処理内で予期しない例外を発生させる
+  env.g.searchPhoneCandidatesViaSerpApi_ = function () { throw new Error("予期しない一般例外"); };
+  env.g.executeAllProcesses();
+
+  check("T7: CSVが出力されない", env.exported.length, 0);
+  checkTrue("T7: 営業対象シートが確定しない", env.ss.getSheets().every(s => s.getName().indexOf("04_SALES_") !== 0));
+  checkTrue("T7: 件数サマリーが確定しない", !env.sheet("00_件数サマリー"));
+  checkTrue("T7: 例外発生行のカーソルが保存される", "PHONE_ENRICHMENT_CURSOR_ELECTRIC" in env.props);
+  check("T7: 後続処理未確定フラグ", env.props.PHONE_ENRICHMENT_PENDING_FINALIZE_ELECTRIC, "true");
+  const alertText = env.alerts.join("\n");
+  checkTrue("T7: 途中停止として表示される（finished=false）", alertText.indexOf("途中で停止") !== -1);
+  checkTrue("T7: 例外内容を表示", alertText.indexOf("予期しない一般例外") !== -1);
+  checkTrue("T7: CSV未出力である旨を表示", alertText.indexOf("CSVはまだ出力されていません") !== -1);
+})();
+
+// ================================================================
+// テスト8: Maps候補あり・電話なしの状態で詳細検索前にAPI上限へ到達
+// → 「見つからず」と確定せず、未処理のままカーソル保存→再開で補完
+// ================================================================
+(function () {
+  const env = buildEnv({ props: { MAX_SERPAPI_CALLS_PER_RUN: "1" } });
+  let mapsCalls = 0;
+  env.fetchHandler = url => {
+    if (url.indexOf("engine=google_maps") !== -1) {
+      mapsCalls++;
+      // 一覧検索: 候補は見つかるが電話番号なし（place_idあり→詳細検索が必要な状態）
+      return {
+        code: 200,
+        body: {
+          local_results: [{
+            title: "そば処まえかわ",
+            address: "茨城県古河市中央町2-3-4",
+            phone: "",
+            website: "",
+            place_id: "PID-NO-PHONE",
+            type: "そば屋"
+          }]
+        }
+      };
+    }
+    return { code: 200, body: { organic_results: [] } };
+  };
+  env.g.runJudgmentPipeline_();
+  const summary = env.g.executePhoneEnrichment(Date.now());
+
+  check("T8: API呼び出しは上限の1回のみ", summary.apiCalls, 1);
+  check("T8: finished=false", summary.finished, false);
+  check("T8: 行は処理済みにしない", summary.processedCount, 0);
+  check("T8: 見つからずと確定しない", summary.notFoundCount, 0);
+  checkTrue("T8: カーソルが保存される", "PHONE_ENRICHMENT_CURSOR_ELECTRIC" in env.props);
+  const normData = env.sheet("01_NORMALIZED").getDataRange().getValues();
+  const h = normData[0];
+  const row = normData.find(r => r[0] === "そば処まえかわ");
+  const statusIdx = h.indexOf("電話補完ステータス");
+  checkTrue("T8: ステータスが未確定のまま", statusIdx === -1 || row[statusIdx] === "" || row[statusIdx] === undefined);
+
+  // 上限を戻して再実行 → 同じ行から再開して補完される
+  env.props.MAX_SERPAPI_CALLS_PER_RUN = "100";
+  env.fetchHandler = successFetchHandler;
+  const summary2 = env.g.executePhoneEnrichment(Date.now());
+  check("T8: 再開後に完了する", summary2.finished, true);
+  check("T8: 再開後に高信頼補完される", summary2.appliedCount, 1);
+  const normData2 = env.sheet("01_NORMALIZED").getDataRange().getValues();
+  const h2 = normData2[0];
+  const row2 = normData2.find(r => r[0] === "そば処まえかわ");
+  check("T8: 電話番号が反映される", String(row2[h2.indexOf("電話番号")]).replace(/[^\d]/g, ""), "0280222222");
+})();
+
+// ================================================================
+// テスト9: 429/5xx再試行失敗を「見つからず」にせず「APIエラー」として記録
+// ================================================================
+(function () {
+  const env = buildEnv({});
+  let fetchCount = 0;
+  env.fetchHandler = () => { fetchCount++; return { code: 429, body: { error: "rate limited" } }; };
+  env.g.runJudgmentPipeline_();
+  const summary = env.g.executePhoneEnrichment(Date.now());
+
+  check("T9: 見つからずにカウントされない", summary.notFoundCount, 0);
+  checkTrue("T9: エラーとしてカウントされる", summary.errorCount >= 1);
+  const normData = env.sheet("01_NORMALIZED").getDataRange().getValues();
+  const h = normData[0];
+  const row = normData.find(r => r[0] === "そば処まえかわ");
+  check("T9: ステータスはAPIエラー", row[h.indexOf("電話補完ステータス")], "APIエラー");
+  checkTrue("T9: エラー内容に再試行上限を記録", String(row[h.indexOf("電話補完エラー")]).indexOf("再試行上限") !== -1);
+  checkTrue("T9: 最大4回×2種の呼び出しに収まる", fetchCount <= 8);
+  check("T9: 元の電話番号は空のまま", row[h.indexOf("電話番号")], "");
+})();
+
+// ================================================================
+// テスト10: バックオフ待機前に期限到達 → 追加呼び出し・sleepをしない
+// ================================================================
+(function () {
+  const env = buildEnv({});
+  let fetchCount = 0;
+  env.fetchHandler = () => { fetchCount++; return { code: 429, body: {} }; };
+  env.g.runJudgmentPipeline_();
+  env.sleeps = 0;
+  // 一括処理開始から約239.5秒経過している状態を再現
+  // → ループ先頭・呼び出し前の期限チェックは通るが、バックオフ待機（+1秒）で期限を跨ぐ
+  const summary = env.g.executePhoneEnrichment(Date.now() - (240 * 1000 - 500));
+
+  check("T10: API呼び出しは1回のみ（再試行しない）", fetchCount, 1);
+  check("T10: バックオフのsleepを行わない", env.sleeps, 0);
+  check("T10: finished=false", summary.finished, false);
+  check("T10: 行は未処理のまま", summary.processedCount, 0);
+  check("T10: 見つからずと確定しない", summary.notFoundCount, 0);
+  checkTrue("T10: カーソルが保存される", "PHONE_ENRICHMENT_CURSOR_ELECTRIC" in env.props);
 })();
 
 // ---- 結果 ----

@@ -15,6 +15,11 @@
  *    スコアリングする（対象店舗の値を候補へそのまま代入しない）。住所を情報源で
  *    確認できない候補は自動採用せず要確認へ。同名競合・スコア差の判定は
  *    「別店舗とみなせる候補」に限定（同一店舗の複数ソース確認を競合扱いしない）。
+ * 6. 【最終修正】401/403以外の一般例外でも後続処理（営業対象・CSV・サマリー）を
+ *    確定せず、例外発生行のカーソルを保存してfinished=falseで停止。
+ *    1店舗の検索途中でAPI上限・期限に達し電話番号未取得の場合は「見つからず」と
+ *    確定せず未処理のまま停止（次回同行から再開）。API呼び出し前・バックオフ
+ *    待機前にも全体期限を確認。429/5xx再試行失敗は「APIエラー」として記録。
  *
  * Ver10.0.0 変更点（Ver9.9.1からの差分）
  * 1. SYSTEM_PROFILE（ELECTRIC=電気営業用／AFFILIATE=リアルアフィリエイト用）による
@@ -173,15 +178,22 @@ function executeAllProcesses() {
   importCSVFiles();
   runJudgmentPipeline_();
 
-  // 電話番号補完（SerpAPI）。キー未設定時は補完のみスキップし、リスト生成は継続する。
-  // 途中停止（API上限・実行時間・401/403認証エラー）の場合は、営業対象シート生成・
-  // コムデスクCSV出力・件数サマリーの確定を行わずに停止する（Ver10.0.1）。
+  // 電話番号補完（SerpAPI）。
+  // Ver10.0.1: 401/403に限らず、補完が正常完了しなかった場合（あらゆる例外・
+  // API上限・実行時間超過を含む）は、営業対象シート生成・コムデスクCSV出力・
+  // 件数サマリーの確定を一切行わずに停止する。
   let enrichment = null;
-  let enrichmentError = "";
   try {
     enrichment = executePhoneEnrichment(pipelineStartMillis);
   } catch (e) {
-    enrichmentError = e.message;
+    // executePhoneEnrichmentは原則例外を投げないが、万一の例外でも後続処理を確定しない
+    setPendingFinalize_(true);
+    SpreadsheetApp.getUi().alert(
+      "電話番号補完でエラーが発生したため処理を停止しました。\n" +
+      "営業対象シート・コムデスクCSV・件数サマリーは確定しておらず、完成版CSVはまだ出力されていません。\n\n" +
+      e.message
+    );
+    return;
   }
 
   if (enrichment && !enrichment.finished) {
@@ -197,8 +209,6 @@ function executeAllProcesses() {
     `営業対象: ${countSummary.total営業対象}件（ジャンル別・時間帯別の内訳は「00_件数サマリー」タブ参照）`;
   if (enrichment) {
     message += "\n\n" + buildPhoneEnrichmentSummaryText_(enrichment);
-  } else if (enrichmentError) {
-    message += `\n\n⚠️ 電話番号補完はスキップされました:\n${enrichmentError}`;
   }
   SpreadsheetApp.getUi().alert(message);
 }
@@ -2064,10 +2074,16 @@ function isSerpApiAuthError_(code) { return code === 401 || code === 403; }
 function isSerpApiRetryable_(code) { return code === 429 || (code >= 500 && code <= 599); }
 
 // URLを組み立てて取得する。429/5xxは指数バックオフで最大3回再試行、401/403は即停止。
+// API呼び出し前・バックオフ待機前に一括処理全体の期限を確認し、期限が近い場合は
+// 追加の呼び出しやsleepを行わず安全停止させる（Ver10.0.1）。
 // APIキーはログ・例外メッセージへ出力しない。
 function serpApiFetchJson_(params, config, state, apiLabel, rowKey, query) {
   if (state.apiCalls >= config.maxCallsPerRun) {
     state.limitReached = true;
+    return null;
+  }
+  if (state.deadlineMillis && Date.now() > state.deadlineMillis) {
+    state.deadlineReached = true;
     return null;
   }
   const paramPairs = [];
@@ -2078,6 +2094,11 @@ function serpApiFetchJson_(params, config, state, apiLabel, rowKey, query) {
   let lastCode = 0;
   for (let attempt = 0; attempt <= 3; attempt++) {
     if (state.apiCalls >= config.maxCallsPerRun) { state.limitReached = true; return null; }
+    // 呼び出し前の期限確認
+    if (state.deadlineMillis && Date.now() > state.deadlineMillis) {
+      state.deadlineReached = true;
+      return null;
+    }
     let code = 0;
     let text = "";
     try {
@@ -2099,20 +2120,36 @@ function serpApiFetchJson_(params, config, state, apiLabel, rowKey, query) {
     ]);
 
     if (code === 200) {
-      try { return JSON.parse(text); } catch (e) { state.lastError = "JSON解析エラー"; return null; }
+      try { return JSON.parse(text); } catch (e) {
+        state.lastError = "JSON解析エラー";
+        state.httpFailed = true;
+        return null;
+      }
     }
     if (isSerpApiAuthError_(code)) {
       state.authError = true;
       throw new Error("SerpAPI認証エラー（HTTP " + code + "）。APIキーまたは権限を確認してください。処理を停止します。");
     }
     if (isSerpApiRetryable_(code) || code === -1) {
-      if (attempt < 3) Utilities.sleep(1000 * Math.pow(2, attempt)); // 1s→2s→4s
+      if (attempt < 3) {
+        const waitMs = 1000 * Math.pow(2, attempt); // 1s→2s→4s
+        // バックオフ待機前の期限確認（期限を跨ぐ待機・追加呼び出しを行わない）
+        if (state.deadlineMillis && Date.now() + waitMs > state.deadlineMillis) {
+          state.deadlineReached = true;
+          state.lastError = "HTTP " + code + "（実行期限到達のため再試行を中断）";
+          return null;
+        }
+        Utilities.sleep(waitMs);
+      }
       continue;
     }
     state.lastError = "HTTP " + code;
+    state.httpFailed = true;
     return null;
   }
+  // 最大再試行後も失敗（Ver10.0.1: この行は「見つからず」ではなく「APIエラー」として記録される）
   state.lastError = "HTTP " + lastCode + "（再試行上限到達）";
+  state.httpFailed = true;
   return null;
 }
 
@@ -2182,7 +2219,7 @@ function searchPhoneCandidatesViaSerpApi_(target, config, state, rowKey) {
 
   // Google Mapsで電話番号を確定できない場合のみ、通常Google検索で補助確認（§7.4）
   const hasPhone = candidates.some(c => validateJpPhoneNumber_(c.phone).ok);
-  if (!hasPhone && !state.limitReached && !state.authError) {
+  if (!hasPhone && !state.limitReached && !state.deadlineReached && !state.authError) {
     const gJson = serpApiFetchJson_(
       { engine: "google", q: query, hl: "ja", gl: "jp", num: "10" },
       config, state, "google通常検索", rowKey, query
@@ -2331,20 +2368,24 @@ function executePhoneEnrichment(pipelineStartMillis) {
     if (!isNaN(parsed) && parsed > 0 && parsed < factRows.length) startIndex = parsed;
   }
 
-  const state = {
-    apiCalls: 0, rowApiCalls: 0, logs: [], reviewRows: [],
-    limitReached: false, authError: false, lastError: "",
-    queryCache: {}
-  };
   // 実行時間の起点（Ver10.0.1: 一括処理全体の開始時点を優先する）
   const startMillis = (typeof pipelineStartMillis === "number" && pipelineStartMillis > 0)
     ? pipelineStartMillis
     : Date.now();
+  const state = {
+    apiCalls: 0, rowApiCalls: 0, logs: [], reviewRows: [],
+    limitReached: false, authError: false, lastError: "",
+    // API呼び出し・バックオフ待機の前に確認する一括処理全体の期限
+    deadlineMillis: startMillis + config.safeStopMillis,
+    deadlineReached: false,
+    httpFailed: false,
+    exceptionMessage: "",
+    queryCache: {}
+  };
   const nowText = () => Utilities.formatDate(new Date(), "JST", "yyyy-MM-dd HH:mm:ss");
   let normDirty = false;
   let stoppedAt = -1;
   let currentIndex = startIndex;
-  let rethrowError = null;
 
   const setEnrichCols = (normIdx, statusObj) => {
     if (normIdx === undefined || normIdx < 0) return;
@@ -2397,6 +2438,7 @@ function executePhoneEnrichment(pipelineStartMillis) {
       const cacheKey = target.name + "|" + target.rawAddress;
 
       state.rowApiCalls = 0;
+      state.httpFailed = false;
       let searchResult;
       if (state.queryCache[cacheKey]) {
         searchResult = state.queryCache[cacheKey]; // 同一クエリの重複検索防止（§14.2）
@@ -2409,9 +2451,10 @@ function executePhoneEnrichment(pipelineStartMillis) {
         }
         ss.toast(`「${target.name}」の電話番号を検索中...（API ${state.apiCalls}/${config.maxCallsPerRun}回）`, "📞 電話番号補完");
         searchResult = searchPhoneCandidatesViaSerpApi_(target, config, state, rowKey);
-        // 検索途中でAPI上限に達して候補ゼロの場合は、この行を未処理のまま停止する
-        // （不完全な検索結果で「見つからず」を確定させない）
-        if (state.limitReached && searchResult.candidates.length === 0) {
+        // 検索途中でAPI上限・実行期限に達し、有効な電話番号を取得できていない場合は、
+        // この行を「見つからず」と確定せず未処理のまま停止する（次回同じ行から再開）
+        const hasValidPhone = searchResult.candidates.some(c => validateJpPhoneNumber_(c.phone).ok);
+        if ((state.limitReached || state.deadlineReached) && !hasValidPhone) {
           stoppedAt = i;
           break;
         }
@@ -2463,6 +2506,12 @@ function executePhoneEnrichment(pipelineStartMillis) {
           evalResult.reasons.join(" / ") || "スコア70〜84点", common.source, common.sourceUrl,
           "", config.profile, nowText()
         ]);
+      } else if (state.httpFailed) {
+        // 429/5xx等の再試行失敗が発生した行は「見つからず」と確定せず
+        // 「APIエラー」として記録する（次回実行時に再検索される）（Ver10.0.1）
+        finalStatus = "APIエラー";
+        summary.errorCount++;
+        common.error = uniqueTextList(["API呼び出し失敗: " + (common.error || "HTTPエラー")].concat(evalResult.reasons)).join(" / ");
       } else {
         finalStatus = "見つからず";
         summary.notFoundCount++;
@@ -2479,10 +2528,14 @@ function executePhoneEnrichment(pipelineStartMillis) {
       ]);
     }
   } catch (e) {
+    // Ver10.0.1: 401/403に限らず、あらゆる例外で正常完了扱いにしない。
+    // 例外発生行のカーソルを保存し、finished=falseで返す（例外は再スローしない）。
+    // 呼び出し元（executeAllProcesses等）は finished=false を見て
+    // 営業対象シート・コムデスクCSV・件数サマリーの確定を行わない。
     summary.errorCount++;
     summary.finished = false;
     summary.message = e.message;
-    // エラー発生行から再開できるようカーソル位置を保存する（401/403対応 Ver10.0.1）
+    state.exceptionMessage = e.message;
     stoppedAt = currentIndex;
     // 発生行にAPIエラーを記録する
     try {
@@ -2496,7 +2549,6 @@ function executePhoneEnrichment(pipelineStartMillis) {
       nowText(), config.profile, "", "", "エラー", "", "", "", "",
       "APIエラー", state.apiCalls, e.message
     ]);
-    if (!state.authError) rethrowError = e;
   } finally {
     summary.authError = state.authError;
 
@@ -2514,6 +2566,8 @@ function executePhoneEnrichment(pipelineStartMillis) {
       summary.remainingCount = remaining;
       if (state.authError) {
         summary.message = `SerpAPIの認証エラー（401/403）のため${stoppedAt}行目で停止しました。スクリプトプロパティのSERPAPI_API_KEYを修正後に再実行すると、この行から再開します。`;
+      } else if (state.exceptionMessage) {
+        summary.message = `エラー（${state.exceptionMessage}）のため${stoppedAt}行目で停止しました。再実行すると同じ行から再開します。`;
       } else if (state.limitReached) {
         summary.message = `API上限（${config.maxCallsPerRun}回）に達したため${stoppedAt}行目で停止しました。再実行すると続きから処理します。`;
       } else {
@@ -2531,7 +2585,6 @@ function executePhoneEnrichment(pipelineStartMillis) {
     if (state.reviewRows.length > 0) appendPhoneEnrichmentReviewRows_(ss, state.reviewRows);
   }
 
-  if (rethrowError) throw rethrowError;
   return summary;
 }
 
