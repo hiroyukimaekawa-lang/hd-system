@@ -1,6 +1,38 @@
 /**
- * 店舗管理システム - 統合処理モジュール Ver9.9.1 (飲食店・最強版 ＋ 超・重複排除機能)
+ * 店舗管理システム - 統合処理モジュール Ver10.0.1 (飲食店・最強版 ＋ 超・重複排除機能)
  * (完成版CSVファイル全自動エクスポート ➔ 31項目新フォーマット ➔ BP検索確定値化 ➔ 時間の全角対応＆通し営業時間自動スライド ➔ 曜日除外処理 ➔ 表記揺れ完全吸収)
+ *
+ * Ver10.0.1 変更点（Ver10.0.0からの差分）
+ * 1. 電話番号補完が途中停止（API上限・実行時間・401/403認証エラー）した場合、
+ *    営業対象シート生成・コムデスクCSV出力・件数サマリーを確定せず停止する。
+ *    停止時は処理済み件数・残件数・再開方法・CSV未出力である旨を表示する。
+ * 2. resumePhoneEnrichmentFromTrigger（または補完メニュー再実行）で補完が完了した場合、
+ *    CSVを再取込せずに現在の01_NORMALIZEDから再判定〜分類〜営業対象〜コムデスクCSV〜
+ *    件数サマリー〜補完結果表示まで自動実行する。途中停止時は再びカーソルを保存して終了。
+ * 3. 安全停止時間をexecuteAllProcesses開始時点（CSV取込・初回判定を含む）から計測。
+ * 4. 401/403発生時は一括処理全体を停止し、対象行のカーソルを保存（キー修正後に再開可能）。
+ * 5. 通常Google検索候補は、情報源テキストに店名・住所が実際に含まれるかを検証してから
+ *    スコアリングする（対象店舗の値を候補へそのまま代入しない）。住所を情報源で
+ *    確認できない候補は自動採用せず要確認へ。同名競合・スコア差の判定は
+ *    「別店舗とみなせる候補」に限定（同一店舗の複数ソース確認を競合扱いしない）。
+ * 6. 【最終修正】401/403以外の一般例外でも後続処理（営業対象・CSV・サマリー）を
+ *    確定せず、例外発生行のカーソルを保存してfinished=falseで停止。
+ *    1店舗の検索途中でAPI上限・期限に達し電話番号未取得の場合は「見つからず」と
+ *    確定せず未処理のまま停止（次回同行から再開）。API呼び出し前・バックオフ
+ *    待機前にも全体期限を確認。429/5xx再試行失敗は「APIエラー」として記録。
+ *
+ * Ver10.0.0 変更点（Ver9.9.1からの差分）
+ * 1. SYSTEM_PROFILE（ELECTRIC=電気営業用／AFFILIATE=リアルアフィリエイト用）による
+ *    デュアルプロファイル運用を追加。ELECTRICはビル・階数表記候補を営業対象外に、
+ *    AFFILIATEはビル・階数表記のみでは除外しない。共通除外（道の駅・カラオケ・
+ *    総合公園・ゴルフ・ホテル・スーパー・イオンモール等）は両プロファイルで優先適用。
+ * 2. 電話番号未取得店舗のSerpAPI自動補完機能を追加（google_maps検索→詳細取得→
+ *    通常Google検索の補助確認→信頼度スコア判定→85点以上のみ自動補完、70〜84点は
+ *    確認_電話番号候補シートへ）。ドライラン（PHONE_ENRICHMENT_DRY_RUN=true）対応。
+ *    実行ログは電話番号補完ログシートへ記録。既存電話番号は絶対に上書きしない。
+ * 3. SerpAPIキーをコードから削除し、スクリプトプロパティ SERPAPI_API_KEY へ移行。
+ * 4. コムデスクCSVのファイル名を「コムデスク_<運用区分>_<エリア>_<ジャンル>_<日付>.csv」
+ *    に変更（31列構成・列順は従来どおり変更なし）。
  *
  * Ver9.9.1 変更点（Ver9.9.0からの差分）
  * 1. Ver9.9.0で導入した「架電グループ（居酒屋系／カフェ系／その他飲食）への
@@ -38,9 +70,75 @@
  */
 
 // =====================================================================
-// ⚙️ 設定エリア（あなたのご自身のSerpAPIのAPIキーをここに貼り付けてください）
+// ⚙️ 設定エリア（Ver10.0.0）
+// 秘密情報（SerpAPIキー）はコードに書かず、GASのスクリプトプロパティで管理する。
+// 【ファイル > プロジェクトの設定 > スクリプト プロパティ】に以下を登録すること。
+//
+//   SERPAPI_API_KEY             = <SerpAPIのAPIキー>（必須・電話番号補完を使う場合）
+//   SYSTEM_PROFILE              = ELECTRIC または AFFILIATE（必須）
+//   MAX_SERPAPI_CALLS_PER_RUN   = 100（省略時100）
+//   MIN_AUTO_ACCEPT_SCORE       = 85（省略時85）
+//   PHONE_ENRICHMENT_DRY_RUN    = true / false（省略時true＝ドライラン）
+//
+// SYSTEM_PROFILEの動作差分:
+//   ELECTRIC   … ビル・階数表記の候補を営業対象・コムデスクCSVから除外する（電気営業用）
+//   AFFILIATE  … ビル・階数表記のみを理由に除外しない（リアルアフィリエイト用）
+// 共通除外（道の駅/カラオケ/総合公園/ゴルフ/ホテル/スーパー/イオンモール等の
+// FACILITY_EXCLUDE_KEYWORDS）は両プロファイルで常に優先して適用される。
 // =====================================================================
-const SERPAPI_KEY = "df3a6435db2e72dfc9431ac13e752eaf5d4bc60e68a50617471bd09a0d73696f";
+
+function getScriptProperties_() {
+  return PropertiesService.getScriptProperties();
+}
+
+// SerpAPIキー（未設定なら秘密情報を含まない明確なエラーで停止する）
+function getSerpApiKey_() {
+  const key = String(getScriptProperties_().getProperty("SERPAPI_API_KEY") || "").trim();
+  if (!key) {
+    throw new Error(
+      "SERPAPI_API_KEYが未設定です。GASのスクリプトプロパティに SERPAPI_API_KEY を登録してください。" +
+      "（APIキーをコード・シート・CSVへ書かないでください）"
+    );
+  }
+  return key;
+}
+
+// システムプロファイル（ELECTRIC=電気営業用 / AFFILIATE=リアルアフィリエイト用）
+let ACTIVE_SYSTEM_PROFILE_CACHE_ = null;
+function getActiveSystemProfile() {
+  if (ACTIVE_SYSTEM_PROFILE_CACHE_) return ACTIVE_SYSTEM_PROFILE_CACHE_;
+  const raw = String(getScriptProperties_().getProperty("SYSTEM_PROFILE") || "").trim().toUpperCase();
+  if (raw !== "ELECTRIC" && raw !== "AFFILIATE") {
+    throw new Error(
+      "SYSTEM_PROFILEが未設定または不正です。スクリプトプロパティに " +
+      "SYSTEM_PROFILE=ELECTRIC（電気営業用）または SYSTEM_PROFILE=AFFILIATE（リアルアフィリエイト用）を設定してください。"
+    );
+  }
+  ACTIVE_SYSTEM_PROFILE_CACHE_ = raw;
+  return raw;
+}
+
+function getSystemProfileLabel_() {
+  return getActiveSystemProfile() === "ELECTRIC" ? "電気営業" : "リアルアフィリエイト";
+}
+
+// 電話番号補完の実行設定
+function getPhoneEnrichmentConfig_() {
+  const props = getScriptProperties_();
+  const maxCalls = parseInt(props.getProperty("MAX_SERPAPI_CALLS_PER_RUN"), 10);
+  const minScore = parseInt(props.getProperty("MIN_AUTO_ACCEPT_SCORE"), 10);
+  const dryRunRaw = String(props.getProperty("PHONE_ENRICHMENT_DRY_RUN") || "").trim().toLowerCase();
+  return {
+    profile: getActiveSystemProfile(),
+    maxCallsPerRun: isNaN(maxCalls) ? 100 : maxCalls,
+    minAutoAcceptScore: isNaN(minScore) ? 85 : minScore,
+    // 未設定時は安全側（ドライラン）に倒す。falseと明記した場合のみ本反映。
+    dryRun: dryRunRaw !== "false",
+    reviewMinScore: 70,
+    minScoreGap: 15,
+    safeStopMillis: 240 * 1000 // GAS 6分制限の手前（4分30秒より前）で安全停止
+  };
+}
 
 // =====================================================================
 // スプレッドシートを開いた時に自動でオリジナルメニューを作る関数
@@ -60,29 +158,101 @@ function onOpen() {
     .addItem("8. 04_SALES_ジャンル別タブ生成", "executeGenerateSalesGenreSheets")
     .addItem("9. 04_SALES_CSVをDrive出力", "executeExportSalesGenreCsvFiles")
     .addSeparator()
+    .addItem("📞 電話番号補完を実行（SerpAPI）", "executePhoneEnrichmentMenu")
+    .addItem("📞 電話補完の再開カーソルをリセット", "resetPhoneEnrichmentCursor")
+    .addSeparator()
     .addItem("📊 件数サマリーを更新", "executeCountSummary")
     .addItem("🔧 チェーンマスタの不足キーワードを追加", "fixKnownChainMasterGaps")
     .addToUi();
 }
 
 // =====================================================================
-// すべての処理を完全自動で連鎖させる一括実行関数
+// すべての処理を完全自動で連鎖させる一括実行関数（Ver10.0.0 §13の実行順序）
+// 1.CSV取込 → 2〜6.正規化/重複/チェーン/施設/ワークフロー → 7〜9.電話番号補完 →
+// 10.再判定（高信頼反映が1件以上の場合のみ）→ 11〜15.振り分け/営業対象/CSV/サマリー/補完結果表示
 // =====================================================================
 function executeAllProcesses() {
+  // Ver10.0.1: 実行時間は一括処理全体の開始時点から計測する（CSV取込・初回判定を含む）
+  const pipelineStartMillis = Date.now();
+
   importCSVFiles();
+  runJudgmentPipeline_();
+
+  // 電話番号補完（SerpAPI）。
+  // Ver10.0.1: 401/403に限らず、補完が正常完了しなかった場合（あらゆる例外・
+  // API上限・実行時間超過を含む）は、営業対象シート生成・コムデスクCSV出力・
+  // 件数サマリーの確定を一切行わずに停止する。
+  let enrichment = null;
+  try {
+    enrichment = executePhoneEnrichment(pipelineStartMillis);
+  } catch (e) {
+    // executePhoneEnrichmentは原則例外を投げないが、万一の例外でも後続処理を確定しない
+    setPendingFinalize_(true);
+    SpreadsheetApp.getUi().alert(
+      "電話番号補完でエラーが発生したため処理を停止しました。\n" +
+      "営業対象シート・コムデスクCSV・件数サマリーは確定しておらず、完成版CSVはまだ出力されていません。\n\n" +
+      e.message
+    );
+    return;
+  }
+
+  if (enrichment && !enrichment.finished) {
+    SpreadsheetApp.getUi().alert(buildPhoneEnrichmentInterruptedText_(enrichment));
+    return;
+  }
+
+  const countSummary = maybeFinalizePipeline_(enrichment, false);
+  if (!countSummary) return; // 念のため（enrichment未完了時はここへ来ない想定）
+
+  let message =
+    `HDリスト処理が完了しました（${getSystemProfileLabel_()}用）。04_SALES_ジャンル別タブとCSVを確認してください。\n\n` +
+    `営業対象: ${countSummary.total営業対象}件（ジャンル別・時間帯別の内訳は「00_件数サマリー」タブ参照）`;
+  if (enrichment) {
+    message += "\n\n" + buildPhoneEnrichmentSummaryText_(enrichment);
+  }
+  SpreadsheetApp.getUi().alert(message);
+}
+
+// 電話番号補完の完了を確認したうえで、営業対象シート生成〜コムデスクCSV出力〜
+// 件数サマリー確定までの後続処理を実行する（§13の11〜14）。
+// 補完が未完了（途中停止）の場合は何も確定せずnullを返す。
+function maybeFinalizePipeline_(enrichment, forceRejudge) {
+  if (enrichment && !enrichment.finished) {
+    setPendingFinalize_(true);
+    return null;
+  }
+  // 高信頼反映が1件以上、または再開後の後続処理（forceRejudge）の場合に再判定する
+  if (forceRejudge || (enrichment && enrichment.appliedCount > 0)) {
+    runJudgmentPipeline_();
+  }
+  executeSplitSheets();
+  executeGenerateSalesGenreSheets();
+  executeExportSalesGenreCsvFiles();
+  const countSummary = executeCountSummary();
+  setPendingFinalize_(false);
+  return countSummary;
+}
+
+// 「補完は停止したが後続処理（営業対象・CSV・サマリー）が未確定」の状態フラグ
+function pendingFinalizeKey_() {
+  return "PHONE_ENRICHMENT_PENDING_FINALIZE_" + getActiveSystemProfile();
+}
+function setPendingFinalize_(on) {
+  const props = getScriptProperties_();
+  if (on) props.setProperty(pendingFinalizeKey_(), "true");
+  else props.deleteProperty(pendingFinalizeKey_());
+}
+function isPendingFinalize_() {
+  return getScriptProperties_().getProperty(pendingFinalizeKey_()) === "true";
+}
+
+// 正規化〜ワークフロー分類までの判定パイプライン（§13の2〜6および10で使用）
+function runJudgmentPipeline_() {
   executeNormalizeAndValidate();
   executeDuplicateCheck();
   executeChainCheck();
   executeFacilityCheck();
   executeWorkflowGrouping();
-  executeSplitSheets();
-  executeGenerateSalesGenreSheets();
-  executeExportSalesGenreCsvFiles();
-  const summary = executeCountSummary();
-  SpreadsheetApp.getUi().alert(
-    `HDリスト処理が完了しました。04_SALES_ジャンル別タブとCSVを確認してください。\n\n` +
-    `営業対象: ${summary.total営業対象}件（ジャンル別・時間帯別の内訳は「00_件数サマリー」タブ参照）`
-  );
 }
 
 // =====================================================================
@@ -640,7 +810,24 @@ const FACILITY_EXCLUDE_KEYWORDS = [
   "天然温泉"
 ];
 
+// ビル・テナント・階数表記の判定候補（§5.3）
+// ELECTRIC: 確認対象（営業対象外・コムデスクCSVに出力しない）
+// AFFILIATE: この表記のみでは除外しない（他条件を満たせば営業対象）
 const FACILITY_REVIEW_KEYWORDS = ["ビル", "プラザ", "タワー", "センター", "テナント", "B1F", "1F", "2F", "3F", "4F", "5F", "階", "地下"];
+
+// 両プロファイル共通で必ず除外する施設キーワード（§5.1）。
+// FACILITY_EXCLUDE_KEYWORDSにも含まれているが、リスト編集で誤って外れないよう
+// ここで明示的に担保する。共通除外はプロファイル設定より常に優先される。
+const COMMON_EXCLUDE_KEYWORDS = ["道の駅", "カラオケ", "総合公園", "ゴルフ", "ホテル", "スーパー", "イオンモール"];
+
+// 実際の完全除外判定に使うリスト（共通除外を先頭に置き、優先的に一致させる）
+const EFFECTIVE_FACILITY_EXCLUDE_KEYWORDS = (function () {
+  const merged = [];
+  COMMON_EXCLUDE_KEYWORDS.concat(FACILITY_EXCLUDE_KEYWORDS).forEach(function (keyword) {
+    if (merged.indexOf(keyword) === -1) merged.push(keyword);
+  });
+  return merged;
+})();
 
 // 店名の末尾に「店名（ジャンル）」のように既知ジャンル名が括弧書きで
 // 紛れ込んでいる場合に取り除く（食べログ<title>由来のスクレイピング崩れ対策）。
@@ -885,7 +1072,8 @@ function executeExportSalesGenreCsvFiles() {
 
     const genre = sheetName.replace("04_SALES_", "");
     const areaName = detectAreaNameFromComdeskRows(values) || "ダウンロードリスト";
-    const fileName = `【営業リスト】${areaName}_${genre}_${formattedDate}.csv`;
+    // Ver10.0.0: ファイル名に運用区分（電気営業／リアルアフィリエイト）を含める（§17）
+    const fileName = `コムデスク_${getSystemProfileLabel_()}_${areaName}_${genre}_${formattedDate}.csv`;
 
     ss.toast(`CSVファイル「${fileName}」をDriveへ保存中...`, "📂 CSV出力");
 
@@ -1356,10 +1544,17 @@ function judgeFacilityStatus(storeName, address, genre) {
   // 土浦市データで「ピアタウンニューシャルム」（テナントビル2F）が対象扱いに
   // なっていたケースで発覚。
   const haystack = [storeName, address, genre].map(textValue).join(" ").normalize("NFKC");
-  const excludeKeyword = FACILITY_EXCLUDE_KEYWORDS.find(keyword => haystack.indexOf(keyword) !== -1);
+  // 共通除外（両プロファイル共通）はプロファイル設定より常に優先する
+  const excludeKeyword = EFFECTIVE_FACILITY_EXCLUDE_KEYWORDS.find(keyword => haystack.indexOf(keyword) !== -1);
   if (excludeKeyword) return { status: "除外", reason: "完全除外キーワード一致: " + excludeKeyword };
   const reviewKeyword = FACILITY_REVIEW_KEYWORDS.find(keyword => haystack.indexOf(keyword) !== -1);
-  if (reviewKeyword) return { status: "確認対象", reason: "確認対象キーワード一致: " + reviewKeyword };
+  if (reviewKeyword) {
+    // AFFILIATE: ビル・階数表記のみを理由に除外・確認送りしない（表記は理由欄に記録して透明性を保つ）
+    if (getActiveSystemProfile() === "AFFILIATE") {
+      return { status: "対象", reason: "ビル・階数表記あり（AFFILIATE運用のため除外しない）: " + reviewKeyword };
+    }
+    return { status: "確認対象", reason: "確認対象キーワード一致: " + reviewKeyword };
+  }
   return { status: "対象", reason: "" };
 }
 
@@ -1555,4 +1750,960 @@ function uniqueTextList(values) {
 
 function textValue(value) {
   return value === null || value === undefined ? "" : String(value).trim();
+}
+
+// =====================================================================
+// 📞 電話番号補完モジュール（Ver10.0.0）
+// 電話番号未取得の店舗をSerpAPI（google_maps→詳細→通常Google検索）で再検索し、
+// 信頼度スコアで「自動補完（85点以上）／要確認（70〜84点）／見送り」に分類する。
+// - 既存の電話番号は絶対に上書きしない
+// - ドライラン（PHONE_ENRICHMENT_DRY_RUN=true）中は候補保存のみで元データ・CSVを変更しない
+// - 実行ログは「電話番号補完ログ」、人手確認候補は「確認_電話番号候補」シートへ
+// =====================================================================
+
+const PHONE_ENRICHMENT_HEADERS = [
+  "電話番号候補", "電話補完ステータス", "電話補完信頼度", "電話補完取得元",
+  "電話補完取得元URL", "電話補完照合店名", "電話補完照合住所", "電話補完検索クエリ",
+  "電話補完実行日時", "電話補完API呼出回数", "電話補完エラー", "システム区分"
+];
+
+const PHONE_ENRICHMENT_LOG_SHEET = "電話番号補完ログ";
+const PHONE_ENRICHMENT_REVIEW_SHEET = "確認_電話番号候補";
+
+const PHONE_ENRICHMENT_LOG_HEADER = [
+  "実行日時", "システム区分", "対象行キー", "検索クエリ", "API種別", "HTTP結果",
+  "候補件数", "採用候補", "信頼度", "最終ステータス", "API呼び出し回数", "エラー内容"
+];
+
+const PHONE_ENRICHMENT_REVIEW_HEADER = [
+  "元の店舗名", "元の住所", "電話番号候補", "API側店舗名", "API側住所",
+  "信頼度スコア", "判定理由", "取得元", "取得元URL", "手動判定（採用/不採用）",
+  "システム区分", "実行日時"
+];
+
+function phoneEnrichmentCursorKey_() {
+  return "PHONE_ENRICHMENT_CURSOR_" + getActiveSystemProfile();
+}
+
+// 電話番号補完の対象行かどうか（§7.1）。対象外の場合はreasonを返す。
+function judgePhoneEnrichmentTarget_(header, row, profile) {
+  const phone = getRowValueByHeader(header, row, "正規化電話番号") ||
+    normalizePhoneNumberForAnalysis(getRowValueByHeader(header, row, "電話番号"));
+  if (phone) return { target: false, reason: "" }; // 電話番号あり→管理列は触らない
+
+  const storeName = getRowValueByHeader(header, row, "店名");
+  const address = getRowValueByHeader(header, row, "住所");
+  if (!storeName || !address) return { target: false, reason: "店名または住所なし" };
+  if (getRowValueByHeader(header, row, "取得ステータス") === "失敗") return { target: false, reason: "取得失敗データ" };
+  if (getRowValueByHeader(header, row, "重複判定") !== "ユニーク") return { target: false, reason: "重複除外対象" };
+  if (getRowValueByHeader(header, row, "チェーン判定") === "チェーン店") return { target: false, reason: "チェーン店除外対象" };
+  if (getRowValueByHeader(header, row, "エリア判定") !== "エリア内") return { target: false, reason: "対象エリア外" };
+
+  const facilityStatus = getRowValueByHeader(header, row, "施設判定");
+  if (facilityStatus === "除外") return { target: false, reason: "共通除外施設" };
+  // ELECTRIC: ビル・階数表記の確認候補はAPI検索対象から除外する（§7.1）
+  if (profile === "ELECTRIC" && facilityStatus === "確認対象") return { target: false, reason: "ビル・階数表記候補（ELECTRIC）" };
+
+  const enrichStatus = getRowValueByHeader(header, row, "電話補完ステータス");
+  if (enrichStatus === "高信頼補完") return { target: false, reason: "補完済み" };
+
+  return { target: true, reason: "" };
+}
+
+// 行を特定する安定キー（§12: GoogleマップURL → 取得元URL → 正規化店名＋住所）
+function buildStableRowKey_(header, row) {
+  const urlColumns = ["GoogleマップURL", "GoogleマップUrl", "マップURL", "GoogleMapURL", "地図URL", "取得元URL", "詳細URL"];
+  for (let i = 0; i < urlColumns.length; i++) {
+    const v = getRowValueByHeader(header, row, urlColumns[i]);
+    if (v) return "URL::" + v;
+  }
+  const name = simplifyStoreName(getRowValueByHeader(header, row, "店名"));
+  const addr = normalizeAddressForMatch(getRowValueByHeader(header, row, "住所")).comparable;
+  if (!name && !addr) return "";
+  return "NA::" + name + "::" + addr;
+}
+
+// ---------------------------------------------------------------------
+// 正規化（§8.1 店舗名 / §8.2 住所 / §9 電話番号）
+// ---------------------------------------------------------------------
+
+// 比較用店舗名の正規化。法人格は除くが、支店名・店名・営業所名は残す。
+function normalizeStoreNameForMatch(name) {
+  let n = textValue(name).normalize("NFKC").toLowerCase();
+  n = n.replace(/(株式会社|有限会社|合同会社|合資会社|合名会社|\(株\)|\(有\)|㈱|㈲)/g, "");
+  n = n.replace(/[\s　]+/g, " ").trim();
+  n = n.replace(/[・、。，．！？!?()（）【】\[\]「」『』_"'’‘“”]/g, "");
+  n = n.replace(/[〜~ｰ―—–\-−]/g, "");
+  return n.trim();
+}
+
+// 店名から支店・店舗識別ラベル（「◯◯店」「◯◯支店」「◯◯営業所」）を抽出
+function extractBranchLabel_(name) {
+  const n = textValue(name).normalize("NFKC");
+  const match = n.match(/([^\s　・]{1,12}(?:支店|営業所|店))$/);
+  return match ? match[1] : "";
+}
+
+// 比較用住所の正規化。完全住所と建物名・階数を除いた比較用住所の両方を返す。
+function normalizeAddressForMatch(address) {
+  let a = textValue(address).normalize("NFKC");
+  a = a.replace(/〒?\d{3}-?\d{4}\s*/g, "");   // 郵便番号接頭辞
+  a = a.replace(/^日本、?\s*/, "");
+  a = a.replace(/[‐－ｰ―—–−]/g, "-");          // ハイフン表記統一
+  // 番地表記の統一（数字に挟まれた場合のみ変換し、地名中の「番」「地」「の」は壊さない）
+  a = a.replace(/([0-9])番地([0-9])/g, "$1-$2");
+  a = a.replace(/([0-9])番地/g, "$1");
+  a = a.replace(/([0-9])[番の]([0-9])/g, "$1-$2");
+  a = a.replace(/([0-9])号(?![室館])/g, "$1");
+  a = a.replace(/([0-9])丁目/g, "$1-");
+  a = a.replace(/[\s　]+/g, "");
+  a = a.replace(/-+/g, "-").replace(/-$/, "");
+
+  const full = a;
+  // 建物名・階数を除いた比較用住所（番地は店舗特定に必要なため残す）
+  let noBuilding = a.replace(/(ビル|ビルディング|マンション|ハイツ|コーポ|アパート|タワー|プラザ|センター|テナント|会館|[0-9]+f|B[0-9]+F|[0-9]+F|[0-9]+階|地下[0-9]*階?)[^-]*$/i, "");
+  // 番地列（数字-数字…）の直後より後ろに建物名等の非数値文字列が続く場合は落とす
+  const banchiMatch = noBuilding.match(/^(.*?[0-9]+(?:-[0-9]+)*)/);
+  if (banchiMatch) noBuilding = banchiMatch[1];
+
+  const prefMatch = full.match(/^(北海道|東京都|大阪府|京都府|.{2,3}県)/);
+  const pref = prefMatch ? prefMatch[1] : "";
+  let rest = pref ? full.slice(pref.length) : full;
+  const cityMatch = rest.match(/^(.+?郡.+?[町村]|.+?市.+?区|.+?[市区町村])/);
+  const city = cityMatch ? cityMatch[1] : "";
+  rest = city ? rest.slice(city.length) : rest;
+  const townMatch = rest.match(/^([^0-9-]+)/);
+  const town = townMatch ? townMatch[1] : "";
+  const banchiDigitsMatch = rest.match(/([0-9]+(?:-[0-9]+)*)/);
+  const banchi = banchiDigitsMatch ? banchiDigitsMatch[1] : "";
+
+  return { full: full, comparable: noBuilding, pref: pref, city: city, town: town, banchi: banchi };
+}
+
+// 情報源テキスト（検索結果のタイトル・スニペット等）に店舗名が実際に含まれるか
+function sourceTextContainsName_(sourceText, targetName) {
+  const normSource = normalizeStoreNameForMatch(sourceText);
+  const normName = normalizeStoreNameForMatch(targetName);
+  return !!normName && normSource.indexOf(normName) !== -1;
+}
+
+// 情報源テキストに対象住所（市区町村＋町域または番地）が実際に含まれるか
+function sourceTextContainsAddress_(sourceText, targetAddr) {
+  if (!targetAddr || !targetAddr.city) return false;
+  let t = textValue(sourceText).normalize("NFKC")
+    .replace(/[‐－ｰ―—–−]/g, "-")
+    .replace(/[\s　]/g, "");
+  t = t.replace(/([0-9])番地([0-9])/g, "$1-$2")
+    .replace(/([0-9])番地/g, "$1")
+    .replace(/([0-9])[番の]([0-9])/g, "$1-$2")
+    .replace(/([0-9])丁目/g, "$1-");
+  if (t.indexOf(targetAddr.city) === -1) return false;
+  if (targetAddr.banchi && t.indexOf(targetAddr.banchi) !== -1) return true;
+  if (targetAddr.town && t.indexOf(targetAddr.town) !== -1) return true;
+  // 町域・番地を元々持たない住所の場合のみ市区町村一致まで許容する
+  return !targetAddr.banchi && !targetAddr.town;
+}
+
+// 電話番号の検証・正規化（§9）。okがtrueのときのみ採用可。
+function validateJpPhoneNumber_(raw) {
+  let s = textValue(raw).normalize("NFKC");
+  s = s.replace(/[^\d+]/g, "");
+  if (s.startsWith("+81")) s = "0" + s.slice(3);
+  else if (s.startsWith("0081")) s = "0" + s.slice(4);
+  const digits = s.replace(/[^\d]/g, "");
+  if (!/^0\d{9,10}$/.test(digits)) return { ok: false, digits: digits, display: "" };
+  const okPrefix =
+    /^0[1-9]/.test(digits) && (
+      digits.length === 10 ||
+      (digits.length === 11 && /^(050|070|080|090|0120|0570|0800)/.test(digits)) ||
+      (digits.length === 11 && /^0[1-9]0/.test(digits))
+    );
+  if (!okPrefix) return { ok: false, digits: digits, display: "" };
+  return { ok: true, digits: digits, display: normalizePhoneNumberForAnalysis(digits) };
+}
+
+// ---------------------------------------------------------------------
+// 信頼度スコア（§8.3）と自動採用禁止条件（§8.4）
+// ---------------------------------------------------------------------
+
+function scorePhoneCandidate_(target, candidate) {
+  let score = 0;
+  const detail = [];
+
+  // 店舗名一致（最大40点）
+  const tName = normalizeStoreNameForMatch(target.name);
+  const cName = normalizeStoreNameForMatch(candidate.name);
+  let nameScore = 0;
+  if (tName && cName) {
+    if (tName === cName) nameScore = 40;
+    else if (tName.indexOf(cName) !== -1 || cName.indexOf(tName) !== -1) nameScore = 30;
+  }
+  score += nameScore; detail.push("店名:" + nameScore);
+
+  // 都道府県・市区町村一致（最大20点）
+  const tAddr = target.addr;
+  const cAddr = normalizeAddressForMatch(candidate.address);
+  let areaScore = 0;
+  if (tAddr.city && cAddr.city && tAddr.city === cAddr.city && (!tAddr.pref || !cAddr.pref || tAddr.pref === cAddr.pref)) areaScore = 20;
+  else if (tAddr.pref && cAddr.pref && tAddr.pref === cAddr.pref) areaScore = 8;
+  score += areaScore; detail.push("市区町村:" + areaScore);
+
+  // 町域・番地一致（最大20点）
+  let townScore = 0;
+  if (tAddr.town && cAddr.town && (tAddr.town === cAddr.town || tAddr.town.indexOf(cAddr.town) !== -1 || cAddr.town.indexOf(tAddr.town) !== -1)) townScore += 10;
+  if (tAddr.banchi && cAddr.banchi && tAddr.banchi === cAddr.banchi) townScore += 10;
+  score += townScore; detail.push("町域番地:" + townScore);
+
+  // 店舗ジャンル一致（最大10点）
+  let genreScore = 0;
+  if (target.genre && candidate.type) {
+    const candGenre = normalizeSystemGenre(candidate.type, "", "", candidate.name);
+    if (candGenre && candGenre === target.genre) genreScore = 10;
+  }
+  score += genreScore; detail.push("ジャンル:" + genreScore);
+
+  // Google Maps ID または公式サイトによる裏付け（最大10点）
+  let backupScore = (candidate.placeId || candidate.dataId || candidate.website) ? 10 : 0;
+  score += backupScore; detail.push("裏付け:" + backupScore);
+
+  return {
+    score: score,
+    nameScore: nameScore,
+    areaScore: areaScore,
+    townScore: townScore,
+    detail: detail.join(" / "),
+    tAddr: tAddr,
+    cAddr: cAddr
+  };
+}
+
+// 候補一覧を評価して 自動採用(AUTO)/要確認(REVIEW)/見送り(NONE) を決める
+function evaluatePhoneCandidates_(target, candidates, config) {
+  const usable = candidates.filter(c => textValue(c.name));
+  if (usable.length === 0) return { decision: "NONE", reasons: ["候補なし"], best: null, score: 0 };
+
+  const scored = usable.map(c => {
+    const s = scorePhoneCandidate_(target, c);
+    return { candidate: c, scoring: s };
+  }).sort((a, b) => b.scoring.score - a.scoring.score);
+
+  // 最高スコア候補に有効な電話番号がない場合は、有効な電話番号を持つ
+  // 最上位候補を採用対象にする（電話番号のない候補は補完に使えないため）
+  let bestIdx = 0;
+  if (!validateJpPhoneNumber_(scored[0].candidate.phone).ok) {
+    const altIdx = scored.findIndex(s => validateJpPhoneNumber_(s.candidate.phone).ok);
+    if (altIdx !== -1) bestIdx = altIdx;
+  }
+  const best = scored[bestIdx];
+  const reasons = [];
+
+  const phoneCheck = validateJpPhoneNumber_(best.candidate.phone);
+
+  // 「別の店舗」とみなせる候補（電話番号または比較用住所が異なる）だけを競合として扱う。
+  // 同一店舗を複数ソースで確認した場合（同じ番号・同じ住所）は競合にしない。
+  const isDifferentStore = s => {
+    if (s === best) return false;
+    const sPhone = validateJpPhoneNumber_(s.candidate.phone);
+    if (sPhone.ok && phoneCheck.ok && sPhone.digits !== phoneCheck.digits) return true;
+    const sAddr = normalizeAddressForMatch(s.candidate.address).comparable;
+    const bAddr = normalizeAddressForMatch(best.candidate.address).comparable;
+    if (sAddr && bAddr && sAddr !== bAddr) return true;
+    if (!sPhone.ok && !sAddr) return false; // 情報が薄い候補は競合と断定しない
+    return false;
+  };
+  const competitors = scored.filter(isDifferentStore);
+  const second = competitors.length > 0 ? competitors[0] : null;
+
+  // 自動採用禁止条件（§8.4）
+  const tBranch = extractBranchLabel_(target.name);
+  const cBranch = extractBranchLabel_(best.candidate.name);
+  if (tBranch && cBranch && tBranch !== cBranch) reasons.push("支店名不一致");
+
+  const tAddr = best.scoring.tAddr, cAddr = best.scoring.cAddr;
+  if (tAddr.city && cAddr.city && tAddr.city !== cAddr.city) reasons.push("市区町村不一致");
+  if (tAddr.banchi && cAddr.banchi && tAddr.banchi !== cAddr.banchi) reasons.push("番地不一致");
+
+  const bestName = normalizeStoreNameForMatch(best.candidate.name);
+  const sameNameDifferentStore = competitors.filter(s => normalizeStoreNameForMatch(s.candidate.name) === bestName);
+  if (bestName && sameNameDifferentStore.length > 0) reasons.push("同名候補が複数");
+
+  if (second && (best.scoring.score - second.scoring.score) < config.minScoreGap) reasons.push("1位と2位のスコア差が" + config.minScoreGap + "点未満");
+
+  const phones = {};
+  scored.slice(0, 3).forEach(s => {
+    const p = validateJpPhoneNumber_(s.candidate.phone);
+    if (p.ok) phones[p.digits] = true;
+  });
+  if (Object.keys(phones).length > 1) reasons.push("複数の電話番号が競合");
+
+  if (best.candidate.permanentlyClosed) reasons.push("閉業・移転済みの可能性");
+  if (best.scoring.nameScore > 0 && best.scoring.areaScore === 0 && best.scoring.townScore === 0) reasons.push("店舗名のみ一致（住所の裏付けなし）");
+  if (best.candidate.addressUnverified) reasons.push("情報源側で住所を確認できず");
+  if (best.candidate.reviewOnly) reasons.push("情報源の裏付け不足（公式サイト・独立2情報源・店名住所一致のいずれか未確認）");
+  if (!phoneCheck.ok) reasons.push("電話番号形式が不正または未取得");
+
+  const result = {
+    best: best.candidate,
+    score: best.scoring.score,
+    scoreDetail: best.scoring.detail,
+    reasons: reasons,
+    phone: phoneCheck.ok ? phoneCheck.display : ""
+  };
+
+  if (best.scoring.score >= config.minAutoAcceptScore && reasons.length === 0 && phoneCheck.ok) {
+    result.decision = "AUTO";
+  } else if (best.scoring.score >= config.reviewMinScore && phoneCheck.ok) {
+    result.decision = "REVIEW";
+  } else if (phoneCheck.ok && best.candidate.forceReview) {
+    // 通常Google検索で電話番号自体は確認できた候補は、住所未確認等で
+    // スコアが低くても見送りにせず「要確認」へ送る（Ver10.0.1）
+    result.decision = "REVIEW";
+  } else {
+    result.decision = "NONE";
+    if (reasons.length === 0) reasons.push("信頼度スコア不足（" + best.scoring.score + "点）");
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------
+// SerpAPI呼び出し（§7.2〜7.4 / §14）
+// ---------------------------------------------------------------------
+
+// SerpAPIエラー分類用
+function isSerpApiAuthError_(code) { return code === 401 || code === 403; }
+function isSerpApiRetryable_(code) { return code === 429 || (code >= 500 && code <= 599); }
+
+// URLを組み立てて取得する。429/5xxは指数バックオフで最大3回再試行、401/403は即停止。
+// API呼び出し前・バックオフ待機前に一括処理全体の期限を確認し、期限が近い場合は
+// 追加の呼び出しやsleepを行わず安全停止させる（Ver10.0.1）。
+// APIキーはログ・例外メッセージへ出力しない。
+function serpApiFetchJson_(params, config, state, apiLabel, rowKey, query) {
+  if (state.apiCalls >= config.maxCallsPerRun) {
+    state.limitReached = true;
+    return null;
+  }
+  if (state.deadlineMillis && Date.now() > state.deadlineMillis) {
+    state.deadlineReached = true;
+    return null;
+  }
+  const paramPairs = [];
+  Object.keys(params).forEach(k => paramPairs.push(k + "=" + encodeURIComponent(params[k])));
+  const publicUrl = "https://serpapi.com/search.json?" + paramPairs.join("&");
+  const url = publicUrl + "&api_key=" + encodeURIComponent(getSerpApiKey_());
+
+  let lastCode = 0;
+  for (let attempt = 0; attempt <= 3; attempt++) {
+    if (state.apiCalls >= config.maxCallsPerRun) { state.limitReached = true; return null; }
+    // 呼び出し前の期限確認
+    if (state.deadlineMillis && Date.now() > state.deadlineMillis) {
+      state.deadlineReached = true;
+      return null;
+    }
+    let code = 0;
+    let text = "";
+    try {
+      const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+      code = response.getResponseCode();
+      text = response.getContentText();
+    } catch (e) {
+      code = -1;
+      text = "";
+      state.lastError = "通信エラー: " + e.message;
+    }
+    state.apiCalls++;
+    state.rowApiCalls++;
+    lastCode = code;
+    state.logs.push([
+      Utilities.formatDate(new Date(), "JST", "yyyy-MM-dd HH:mm:ss"),
+      config.profile, rowKey, query, apiLabel, String(code),
+      "", "", "", "", state.apiCalls, code === 200 ? "" : (state.lastError || ("HTTP " + code))
+    ]);
+
+    if (code === 200) {
+      try { return JSON.parse(text); } catch (e) {
+        state.lastError = "JSON解析エラー";
+        state.httpFailed = true;
+        return null;
+      }
+    }
+    if (isSerpApiAuthError_(code)) {
+      state.authError = true;
+      throw new Error("SerpAPI認証エラー（HTTP " + code + "）。APIキーまたは権限を確認してください。処理を停止します。");
+    }
+    if (isSerpApiRetryable_(code) || code === -1) {
+      if (attempt < 3) {
+        const waitMs = 1000 * Math.pow(2, attempt); // 1s→2s→4s
+        // バックオフ待機前の期限確認（期限を跨ぐ待機・追加呼び出しを行わない）
+        if (state.deadlineMillis && Date.now() + waitMs > state.deadlineMillis) {
+          state.deadlineReached = true;
+          state.lastError = "HTTP " + code + "（実行期限到達のため再試行を中断）";
+          return null;
+        }
+        Utilities.sleep(waitMs);
+      }
+      continue;
+    }
+    state.lastError = "HTTP " + code;
+    state.httpFailed = true;
+    return null;
+  }
+  // 最大再試行後も失敗（Ver10.0.1: この行は「見つからず」ではなく「APIエラー」として記録される）
+  state.lastError = "HTTP " + lastCode + "（再試行上限到達）";
+  state.httpFailed = true;
+  return null;
+}
+
+// google_mapsの検索結果1件を共通形式に変換する
+function parseMapsCandidate_(r) {
+  if (!r) return null;
+  const typeText = textValue(r.type) || (Array.isArray(r.types) ? r.types.join("/") : "");
+  const openState = textValue(r.open_state) + " " + textValue(r.business_status);
+  return {
+    name: textValue(r.title),
+    address: textValue(r.address),
+    phone: textValue(r.phone),
+    website: textValue(r.website),
+    placeId: textValue(r.place_id),
+    dataId: textValue(r.data_id),
+    dataCid: textValue(r.data_cid),
+    type: typeText,
+    sourceUrl: textValue(r.place_id_search) || textValue(r.link) || "",
+    source: "Google Maps",
+    permanentlyClosed: /閉業|休業|CLOSED_PERMANENTLY|Permanently closed/i.test(openState + " " + typeText),
+    reviewOnly: false
+  };
+}
+
+// §7.3: Google Maps検索 →（電話なしなら）place_idで詳細取得 → §7.4: 通常Google検索の補助確認
+function searchPhoneCandidatesViaSerpApi_(target, config, state, rowKey) {
+  const query = target.name + " " + target.rawAddress;
+  const candidates = [];
+
+  const mapsJson = serpApiFetchJson_(
+    { engine: "google_maps", type: "search", q: query, hl: "ja", gl: "jp" },
+    config, state, "google_maps検索", rowKey, query
+  );
+  if (mapsJson) {
+    if (Array.isArray(mapsJson.local_results)) {
+      mapsJson.local_results.slice(0, 5).forEach(r => {
+        const c = parseMapsCandidate_(r);
+        if (c) candidates.push(c);
+      });
+    }
+    if (mapsJson.place_results) {
+      const c = parseMapsCandidate_(mapsJson.place_results);
+      if (c) candidates.push(c);
+    }
+  }
+
+  // 一覧検索で電話番号が取れていない最有力候補は、place_idで詳細を取得する
+  if (candidates.length > 0) {
+    const scoredTop = candidates
+      .map(c => ({ c: c, s: scorePhoneCandidate_(target, c).score }))
+      .sort((a, b) => b.s - a.s)[0];
+    if (scoredTop && !scoredTop.c.phone && (scoredTop.c.placeId || scoredTop.c.dataId)) {
+      const detailParams = { engine: "google_maps", hl: "ja", gl: "jp" };
+      if (scoredTop.c.placeId) detailParams.place_id = scoredTop.c.placeId;
+      else detailParams.data = scoredTop.c.dataId;
+      const detailJson = serpApiFetchJson_(detailParams, config, state, "google_maps詳細", rowKey, query);
+      if (detailJson && detailJson.place_results) {
+        const d = parseMapsCandidate_(detailJson.place_results);
+        if (d && d.phone) {
+          scoredTop.c.phone = d.phone;
+          if (!scoredTop.c.website) scoredTop.c.website = d.website;
+          if (!scoredTop.c.sourceUrl) scoredTop.c.sourceUrl = d.sourceUrl;
+        }
+      }
+    }
+  }
+
+  // Google Mapsで電話番号を確定できない場合のみ、通常Google検索で補助確認（§7.4）
+  const hasPhone = candidates.some(c => validateJpPhoneNumber_(c.phone).ok);
+  if (!hasPhone && !state.limitReached && !state.deadlineReached && !state.authError) {
+    const gJson = serpApiFetchJson_(
+      { engine: "google", q: query, hl: "ja", gl: "jp", num: "10" },
+      config, state, "google通常検索", rowKey, query
+    );
+    if (gJson) {
+      const kg = gJson.knowledge_graph;
+      const tAddr = target.addr;
+      if (kg && kg.phone) {
+        const kgName = normalizeStoreNameForMatch(kg.title);
+        const tName = normalizeStoreNameForMatch(target.name);
+        const kgAddr = normalizeAddressForMatch(textValue(kg.address));
+        const nameOk = kgName && tName && (kgName === tName || kgName.indexOf(tName) !== -1 || tName.indexOf(kgName) !== -1);
+        const addrOk = kgAddr.city && tAddr.city && kgAddr.city === tAddr.city;
+        if (nameOk && addrOk) {
+          candidates.push({
+            name: textValue(kg.title), address: textValue(kg.address), phone: textValue(kg.phone),
+            website: textValue(kg.website), placeId: "", dataId: "", dataCid: "",
+            type: textValue(kg.type), sourceUrl: textValue(kg.website) || "",
+            source: "ナレッジパネル", permanentlyClosed: false, reviewOnly: false
+          });
+        }
+      }
+      // オーガニック検索結果から電話番号を抽出し、独立した情報源の数を数える。
+      // Ver10.0.1: 対象店舗の店名・住所を候補側へそのまま代入せず、情報源の
+      // テキスト（タイトル・スニペット）に店名・住所が実際に含まれるかを検証する。
+      // 情報源側で住所を確認できない候補は自動採用せず「要確認」へ送る。
+      if (Array.isArray(gJson.organic_results)) {
+        const telRegex = /0\d{1,4}[-−ー\s]?\d{1,4}[-−ー\s]?\d{3,4}/g;
+        const phoneSources = {};
+        gJson.organic_results.slice(0, 10).forEach(r => {
+          const textParts = [textValue(r.title), textValue(r.snippet)].join(" ");
+          const link = textValue(r.link);
+          let domain = "";
+          const dm = link.match(/^https?:\/\/([^/]+)/);
+          if (dm) domain = dm[1].replace(/^www\./, "");
+          const nameInSource = sourceTextContainsName_(textParts, target.name);
+          const addressInSource = sourceTextContainsAddress_(textParts, tAddr);
+          let m;
+          while ((m = telRegex.exec(textParts)) !== null) {
+            const p = validateJpPhoneNumber_(m[0]);
+            if (!p.ok) continue;
+            if (!phoneSources[p.digits]) {
+              phoneSources[p.digits] = { domains: {}, firstLink: link, display: p.display, nameEvidence: false, addressEvidence: false };
+            }
+            if (domain) phoneSources[p.digits].domains[domain] = true;
+            if (nameInSource) phoneSources[p.digits].nameEvidence = true;
+            if (addressInSource) phoneSources[p.digits].addressEvidence = true;
+          }
+        });
+        const officialDomain = (function () {
+          const site = candidates.map(c => c.website).find(w => !!w) || "";
+          const dm = textValue(site).match(/^https?:\/\/([^/]+)/);
+          return dm ? dm[1].replace(/^www\./, "") : "";
+        })();
+        Object.keys(phoneSources).forEach(digits => {
+          const info = phoneSources[digits];
+          const domainCount = Object.keys(info.domains).length;
+          const isOfficial = officialDomain && info.domains[officialDomain];
+          candidates.push({
+            // 情報源で実際に確認できた場合のみ照合値を設定する（未確認なら空欄→スコア加点なし）
+            name: info.nameEvidence ? target.name : "",
+            address: info.addressEvidence ? target.rawAddress : "",
+            phone: info.display,
+            website: isOfficial ? ("https://" + officialDomain) : "", placeId: "", dataId: "", dataCid: "",
+            type: "", sourceUrl: info.firstLink,
+            source: isOfficial ? "公式サイト" : (domainCount >= 2 ? "複数ソース" : "第三者サイト"),
+            permanentlyClosed: false,
+            // 自動採用は「店舗名一致＋住所一致＋（公式サイト or 独立2情報源）」を
+            // 情報源側で確認できた場合のみ。それ以外は要確認どまり。
+            reviewOnly: !((isOfficial || domainCount >= 2) && info.nameEvidence && info.addressEvidence),
+            addressUnverified: !info.addressEvidence,
+            // 電話番号は取得できているため、低スコアでも見送りにせず要確認へ送る
+            forceReview: true
+          });
+        });
+      }
+    }
+  }
+
+  return { query: query, candidates: candidates };
+}
+
+// ---------------------------------------------------------------------
+// メイン処理
+// ---------------------------------------------------------------------
+
+function buildEnrichmentTarget_(header, row) {
+  const name = getRowValueByHeader(header, row, "店名");
+  const rawAddress = getRowValueByHeader(header, row, "住所");
+  return {
+    name: name,
+    rawAddress: rawAddress,
+    addr: normalizeAddressForMatch(rawAddress),
+    genre: getRowValueByHeader(header, row, "正規化ジャンル") || getRowValueByHeader(header, row, "ジャンル")
+  };
+}
+
+// 一括処理から呼ばれる本体。結果サマリーを返す。
+// pipelineStartMillis: 実行時間の起点。executeAllProcessesから呼ばれる場合は
+// 一括処理全体の開始時刻を渡す（CSV取込・初回判定を含む全体で安全停止するため）。
+// 単体実行時は省略可（この関数の開始時刻を使用）。
+// SerpAPIの401/403認証エラーは例外にせず、カーソルを保存して
+// finished=false・authError=true のサマリーで返す（一括処理全体を停止させるため）。
+function executePhoneEnrichment(pipelineStartMillis) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const config = getPhoneEnrichmentConfig_();
+  const summary = {
+    profile: config.profile, dryRun: config.dryRun,
+    targetCount: 0, processedCount: 0, autoCount: 0, appliedCount: 0,
+    reviewCount: 0, notFoundCount: 0, errorCount: 0, apiCalls: 0,
+    remainingCount: 0, authError: false,
+    finished: true, message: ""
+  };
+
+  const factSheet = ss.getSheetByName("04_FACILITY_CHECK");
+  const normSheet = ss.getSheetByName("01_NORMALIZED");
+  if (!factSheet || !normSheet) {
+    summary.message = "04_FACILITY_CHECKまたは01_NORMALIZEDがないため電話番号補完をスキップしました。";
+    return summary;
+  }
+
+  // 01_NORMALIZED読み込み＋管理列の確保
+  const normValues = normSheet.getDataRange().getValues();
+  if (normValues.length <= 1) { summary.message = "対象データなし"; return summary; }
+  const normHeader = normalizeHeaderRow(normValues[0]);
+  const normRows = normValues.slice(1).map(r => r.slice());
+  ensureHeaderColumns(normHeader, normRows, PHONE_ENRICHMENT_HEADERS);
+
+  const normIndexByKey = {};
+  normRows.forEach((row, i) => {
+    const key = buildStableRowKey_(normHeader, row);
+    if (key && normIndexByKey[key] === undefined) normIndexByKey[key] = i;
+  });
+
+  const factValues = factSheet.getDataRange().getValues();
+  if (factValues.length <= 1) { summary.message = "対象データなし"; return summary; }
+  const factHeader = normalizeHeaderRow(factValues[0]);
+  const factRows = factValues.slice(1);
+
+  // 再開カーソル（時間切れ・上限到達で停止した続きから再開する）
+  const props = getScriptProperties_();
+  const cursorRaw = props.getProperty(phoneEnrichmentCursorKey_());
+  let startIndex = 0;
+  if (cursorRaw) {
+    const parsed = parseInt(cursorRaw, 10);
+    if (!isNaN(parsed) && parsed > 0 && parsed < factRows.length) startIndex = parsed;
+  }
+
+  // 実行時間の起点（Ver10.0.1: 一括処理全体の開始時点を優先する）
+  const startMillis = (typeof pipelineStartMillis === "number" && pipelineStartMillis > 0)
+    ? pipelineStartMillis
+    : Date.now();
+  const state = {
+    apiCalls: 0, rowApiCalls: 0, logs: [], reviewRows: [],
+    limitReached: false, authError: false, lastError: "",
+    // API呼び出し・バックオフ待機の前に確認する一括処理全体の期限
+    deadlineMillis: startMillis + config.safeStopMillis,
+    deadlineReached: false,
+    httpFailed: false,
+    exceptionMessage: "",
+    queryCache: {}
+  };
+  const nowText = () => Utilities.formatDate(new Date(), "JST", "yyyy-MM-dd HH:mm:ss");
+  let normDirty = false;
+  let stoppedAt = -1;
+  let currentIndex = startIndex;
+
+  const setEnrichCols = (normIdx, statusObj) => {
+    if (normIdx === undefined || normIdx < 0) return;
+    const row = normRows[normIdx];
+    setRowValueByHeader(normHeader, row, "電話番号候補", statusObj.candidatePhone || "");
+    setRowValueByHeader(normHeader, row, "電話補完ステータス", statusObj.status);
+    setRowValueByHeader(normHeader, row, "電話補完信頼度", statusObj.score === undefined ? "" : statusObj.score);
+    setRowValueByHeader(normHeader, row, "電話補完取得元", statusObj.source || "");
+    setRowValueByHeader(normHeader, row, "電話補完取得元URL", statusObj.sourceUrl || "");
+    setRowValueByHeader(normHeader, row, "電話補完照合店名", statusObj.apiName || "");
+    setRowValueByHeader(normHeader, row, "電話補完照合住所", statusObj.apiAddress || "");
+    setRowValueByHeader(normHeader, row, "電話補完検索クエリ", statusObj.query || "");
+    setRowValueByHeader(normHeader, row, "電話補完実行日時", nowText());
+    setRowValueByHeader(normHeader, row, "電話補完API呼出回数", statusObj.apiCallCount === undefined ? "" : statusObj.apiCallCount);
+    setRowValueByHeader(normHeader, row, "電話補完エラー", statusObj.error || "");
+    setRowValueByHeader(normHeader, row, "システム区分", config.profile);
+    normDirty = true;
+  };
+
+  try {
+    for (let i = startIndex; i < factRows.length; i++) {
+      currentIndex = i;
+      // 安全停止（Ver10.0.1: 一括処理全体の開始時点からの経過時間で判定）
+      if (Date.now() - startMillis > config.safeStopMillis) { stoppedAt = i; break; }
+
+      const factRow = factRows[i];
+      const eligibility = judgePhoneEnrichmentTarget_(factHeader, factRow, config.profile);
+      const rowKey = buildStableRowKey_(factHeader, factRow);
+      const normIdx = normIndexByKey[rowKey];
+
+      if (!eligibility.target) {
+        // 電話番号が空だが対象外になった行のみ「対象外」を記録する
+        if (eligibility.reason && normIdx !== undefined) {
+          const currentStatus = getRowValueByHeader(normHeader, normRows[normIdx], "電話補完ステータス");
+          if (currentStatus !== "高信頼補完") {
+            setEnrichCols(normIdx, { status: "対象外", error: eligibility.reason, query: "" });
+          }
+        }
+        continue;
+      }
+
+      // 01_NORMALIZED側で既に高信頼補完済みの行は再検索しない（冪等性）
+      if (normIdx !== undefined &&
+          getRowValueByHeader(normHeader, normRows[normIdx], "電話補完ステータス") === "高信頼補完") {
+        continue;
+      }
+
+      summary.targetCount++;
+      const target = buildEnrichmentTarget_(factHeader, factRow);
+      const cacheKey = target.name + "|" + target.rawAddress;
+
+      state.rowApiCalls = 0;
+      state.httpFailed = false;
+      let searchResult;
+      if (state.queryCache[cacheKey]) {
+        searchResult = state.queryCache[cacheKey]; // 同一クエリの重複検索防止（§14.2）
+      } else {
+        // この行の検索を始める前にAPI予算を確認する（予算切れなら行を未処理のまま停止）
+        if (state.apiCalls >= config.maxCallsPerRun) {
+          state.limitReached = true;
+          stoppedAt = i;
+          break;
+        }
+        ss.toast(`「${target.name}」の電話番号を検索中...（API ${state.apiCalls}/${config.maxCallsPerRun}回）`, "📞 電話番号補完");
+        searchResult = searchPhoneCandidatesViaSerpApi_(target, config, state, rowKey);
+        // 検索途中でAPI上限・実行期限に達し、有効な電話番号を取得できていない場合は、
+        // この行を「見つからず」と確定せず未処理のまま停止する（次回同じ行から再開）
+        const hasValidPhone = searchResult.candidates.some(c => validateJpPhoneNumber_(c.phone).ok);
+        if ((state.limitReached || state.deadlineReached) && !hasValidPhone) {
+          stoppedAt = i;
+          break;
+        }
+        state.queryCache[cacheKey] = searchResult;
+      }
+      summary.processedCount++;
+
+      const evalResult = evaluatePhoneCandidates_(target, searchResult.candidates, config);
+      const best = evalResult.best;
+      const common = {
+        candidatePhone: evalResult.phone,
+        score: evalResult.score,
+        source: best ? best.source : "",
+        sourceUrl: best ? (best.sourceUrl || best.website || "") : "",
+        apiName: best ? best.name : "",
+        apiAddress: best ? best.address : "",
+        query: searchResult.query,
+        apiCallCount: state.rowApiCalls,
+        error: state.lastError || ""
+      };
+      state.lastError = "";
+
+      let finalStatus;
+      if (evalResult.decision === "AUTO") {
+        if (config.dryRun) {
+          finalStatus = "高信頼候補(ドライラン)";
+          summary.autoCount++;
+        } else {
+          finalStatus = "高信頼補完";
+          summary.autoCount++;
+          // 既存の電話番号が入力されている行は絶対に上書きしない（§9）
+          if (normIdx !== undefined) {
+            const existingPhone = getRowValueByHeader(normHeader, normRows[normIdx], "電話番号");
+            if (!textValue(existingPhone)) {
+              setRowValueByHeader(normHeader, normRows[normIdx], "電話番号", evalResult.phone);
+              summary.appliedCount++;
+            } else {
+              finalStatus = "対象外";
+              common.error = "既存電話番号あり（上書きしない）";
+            }
+          }
+        }
+      } else if (evalResult.decision === "REVIEW") {
+        finalStatus = "要確認";
+        summary.reviewCount++;
+        state.reviewRows.push([
+          target.name, target.rawAddress, evalResult.phone,
+          common.apiName, common.apiAddress, evalResult.score,
+          evalResult.reasons.join(" / ") || "スコア70〜84点", common.source, common.sourceUrl,
+          "", config.profile, nowText()
+        ]);
+      } else if (state.httpFailed) {
+        // 429/5xx等の再試行失敗が発生した行は「見つからず」と確定せず
+        // 「APIエラー」として記録する（次回実行時に再検索される）（Ver10.0.1）
+        finalStatus = "APIエラー";
+        summary.errorCount++;
+        common.error = uniqueTextList(["API呼び出し失敗: " + (common.error || "HTTPエラー")].concat(evalResult.reasons)).join(" / ");
+      } else {
+        finalStatus = "見つからず";
+        summary.notFoundCount++;
+        common.error = uniqueTextList([common.error].concat(evalResult.reasons)).join(" / ");
+      }
+
+      setEnrichCols(normIdx, Object.assign({}, common, { status: finalStatus }));
+
+      state.logs.push([
+        nowText(), config.profile, rowKey, searchResult.query, "判定", "",
+        searchResult.candidates.length, common.apiName, evalResult.score,
+        finalStatus + (config.dryRun ? "（ドライラン）" : ""), state.apiCalls,
+        evalResult.reasons.join(" / ")
+      ]);
+    }
+  } catch (e) {
+    // Ver10.0.1: 401/403に限らず、あらゆる例外で正常完了扱いにしない。
+    // 例外発生行のカーソルを保存し、finished=falseで返す（例外は再スローしない）。
+    // 呼び出し元（executeAllProcesses等）は finished=false を見て
+    // 営業対象シート・コムデスクCSV・件数サマリーの確定を行わない。
+    summary.errorCount++;
+    summary.finished = false;
+    summary.message = e.message;
+    state.exceptionMessage = e.message;
+    stoppedAt = currentIndex;
+    // 発生行にAPIエラーを記録する
+    try {
+      const errRowKey = buildStableRowKey_(factHeader, factRows[currentIndex]);
+      const errNormIdx = normIndexByKey[errRowKey];
+      if (errNormIdx !== undefined) {
+        setEnrichCols(errNormIdx, { status: "APIエラー", error: e.message, query: "" });
+      }
+    } catch (ignored) {}
+    state.logs.push([
+      nowText(), config.profile, "", "", "エラー", "", "", "", "",
+      "APIエラー", state.apiCalls, e.message
+    ]);
+  } finally {
+    summary.authError = state.authError;
+
+    // カーソル保存／クリア
+    if (stoppedAt >= 0) {
+      props.setProperty(phoneEnrichmentCursorKey_(), String(stoppedAt));
+      // 補完未完了＝後続処理（営業対象・CSV・サマリー）は未確定
+      setPendingFinalize_(true);
+      summary.finished = false;
+      // 残件数（停止位置以降でまだ補完対象になる行数）を数える
+      let remaining = 0;
+      for (let r = stoppedAt; r < factRows.length; r++) {
+        if (judgePhoneEnrichmentTarget_(factHeader, factRows[r], config.profile).target) remaining++;
+      }
+      summary.remainingCount = remaining;
+      if (state.authError) {
+        summary.message = `SerpAPIの認証エラー（401/403）のため${stoppedAt}行目で停止しました。スクリプトプロパティのSERPAPI_API_KEYを修正後に再実行すると、この行から再開します。`;
+      } else if (state.exceptionMessage) {
+        summary.message = `エラー（${state.exceptionMessage}）のため${stoppedAt}行目で停止しました。再実行すると同じ行から再開します。`;
+      } else if (state.limitReached) {
+        summary.message = `API上限（${config.maxCallsPerRun}回）に達したため${stoppedAt}行目で停止しました。再実行すると続きから処理します。`;
+      } else {
+        summary.message = `実行時間制限の手前で${stoppedAt}行目にて安全停止しました。再実行すると続きから処理します。`;
+      }
+    } else if (!state.authError && summary.finished) {
+      props.deleteProperty(phoneEnrichmentCursorKey_());
+    }
+
+    summary.apiCalls = state.apiCalls;
+
+    // 01_NORMALIZEDへ反映（ドライラン中も管理列・候補は保存する。電話番号列はAUTO＋本反映時のみ）
+    if (normDirty) writeRowsToExistingSheet(normSheet, normHeader, normRows);
+    if (state.logs.length > 0) appendPhoneEnrichmentLogs_(ss, state.logs);
+    if (state.reviewRows.length > 0) appendPhoneEnrichmentReviewRows_(ss, state.reviewRows);
+  }
+
+  return summary;
+}
+
+// 途中停止時にユーザーへ表示するメッセージ（処理済み・残件数・再開方法・CSV未出力）
+function buildPhoneEnrichmentInterruptedText_(summary) {
+  const lines = [
+    "⚠️ 電話番号補完が途中で停止しました" + (summary.authError ? "（SerpAPI認証エラー: APIキーまたは権限を確認してください）" : "") + "。",
+    "",
+    `処理済み: ${summary.processedCount}件 / 残り: ${summary.remainingCount}件`,
+    "",
+    "営業対象シート・件数サマリーは確定しておらず、完成版コムデスクCSVはまだ出力されていません。",
+    "",
+    "【再開方法】",
+    summary.authError
+      ? "スクリプトプロパティの SERPAPI_API_KEY を修正したうえで、メニュー「📞 電話番号補完を実行（SerpAPI）」を再実行してください。停止した行から再開します。"
+      : "メニュー「📞 電話番号補完を実行（SerpAPI）」を再実行するか、resumePhoneEnrichmentFromTrigger を時間主導トリガーに設定すると、停止した行から自動で再開します。",
+    "補完が完了すると、再判定〜コムデスクCSV出力〜件数サマリーまで自動で実行されます。"
+  ];
+  if (summary.message) lines.push("", summary.message);
+  return lines.join("\n");
+}
+
+// ログシートへ追記（既存行は消さない）
+function appendPhoneEnrichmentLogs_(ss, logRows) {
+  const sheet = getOrCreateSheet(ss, PHONE_ENRICHMENT_LOG_SHEET);
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, PHONE_ENRICHMENT_LOG_HEADER.length).setValues([PHONE_ENRICHMENT_LOG_HEADER]).setFontWeight("bold");
+  }
+  const startRow = sheet.getLastRow() + 1;
+  const normalized = logRows.map(r => {
+    const row = r.slice(0, PHONE_ENRICHMENT_LOG_HEADER.length);
+    while (row.length < PHONE_ENRICHMENT_LOG_HEADER.length) row.push("");
+    return row;
+  });
+  sheet.getRange(startRow, 1, normalized.length, PHONE_ENRICHMENT_LOG_HEADER.length).setNumberFormat("@").setValues(normalized);
+}
+
+// 確認_電話番号候補シートへ追記（同一 店名×住所×候補番号 は重複追加しない）
+function appendPhoneEnrichmentReviewRows_(ss, reviewRows) {
+  const sheet = getOrCreateSheet(ss, PHONE_ENRICHMENT_REVIEW_SHEET);
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, PHONE_ENRICHMENT_REVIEW_HEADER.length).setValues([PHONE_ENRICHMENT_REVIEW_HEADER]).setFontWeight("bold");
+  }
+  const existing = sheet.getLastRow() > 1
+    ? sheet.getRange(2, 1, sheet.getLastRow() - 1, 3).getValues().map(r => r.map(textValue).join("|"))
+    : [];
+  const existingSet = new Set(existing);
+  const newRows = reviewRows.filter(r => !existingSet.has([r[0], r[1], r[2]].map(textValue).join("|")));
+  if (newRows.length === 0) return;
+  const startRow = sheet.getLastRow() + 1;
+  sheet.getRange(startRow, 1, newRows.length, PHONE_ENRICHMENT_REVIEW_HEADER.length).setNumberFormat("@").setValues(newRows);
+}
+
+// メニュー用: 電話番号補完を実行して結果を表示。
+// 途中停止時は再開案内を表示し、後続処理（営業対象・CSV・サマリー）は確定しない。
+// 補完完了かつ後続処理が未確定（前回途中停止）の場合は、再判定〜CSV出力まで実行する。
+function executePhoneEnrichmentMenu() {
+  try {
+    const summary = executePhoneEnrichment();
+    if (!summary.finished) {
+      SpreadsheetApp.getUi().alert(buildPhoneEnrichmentInterruptedText_(summary));
+      return;
+    }
+    let text = buildPhoneEnrichmentSummaryText_(summary);
+    if (isPendingFinalize_()) {
+      const countSummary = maybeFinalizePipeline_(summary, true);
+      if (countSummary) {
+        text += `\n\n再判定〜コムデスクCSV出力〜件数サマリーを実行しました。営業対象: ${countSummary.total営業対象}件`;
+      }
+    }
+    SpreadsheetApp.getUi().alert(text);
+  } catch (e) {
+    SpreadsheetApp.getUi().alert("電話番号補完でエラーが発生しました:\n" + e.message);
+  }
+}
+
+function buildPhoneEnrichmentSummaryText_(summary) {
+  const lines = [
+    `【電話番号補完結果】（${summary.profile === "ELECTRIC" ? "電気営業用" : "リアルアフィリエイト用"}${summary.dryRun ? "・ドライラン" : "・本反映"}）`,
+    `検索対象: ${summary.targetCount}件 / 処理済み: ${summary.processedCount}件`,
+    `高信頼${summary.dryRun ? "候補" : "補完"}: ${summary.autoCount}件${summary.dryRun ? "" : `（反映 ${summary.appliedCount}件）`}`,
+    `要確認: ${summary.reviewCount}件（確認_電話番号候補シート参照）`,
+    `見つからず: ${summary.notFoundCount}件`,
+    `API呼び出し: ${summary.apiCalls}回`
+  ];
+  if (summary.message) lines.push("", summary.message);
+  return lines.join("\n");
+}
+
+// メニュー用: 再開カーソルをリセット
+function resetPhoneEnrichmentCursor() {
+  getScriptProperties_().deleteProperty(phoneEnrichmentCursorKey_());
+  SpreadsheetApp.getUi().alert("電話番号補完の再開カーソルをリセットしました。次回は先頭から処理します。");
+}
+
+// 時間主導トリガーからの再開用（Ver10.0.1）。
+// カーソルが残っている場合は続きから電話番号補完を実行し、
+// 完了した場合はCSVを再取込せず、現在の01_NORMALIZEDを使って
+// 再判定（正規化/重複/チェーン/施設/ワークフロー）→分類シート→営業対象→
+// コムデスクCSV→件数サマリー→補完結果表示まで実行する。
+// 再び途中停止した場合はカーソルを保存してそのまま終了する。
+function resumePhoneEnrichmentFromTrigger() {
+  const props = getScriptProperties_();
+  const hasCursor = !!props.getProperty(phoneEnrichmentCursorKey_());
+  if (!hasCursor && !isPendingFinalize_()) return;
+
+  let summary = null;
+  if (hasCursor) {
+    summary = executePhoneEnrichment(); // トリガー実行のため経過時間はここから計測
+    Logger.log(buildPhoneEnrichmentSummaryText_(summary));
+    if (!summary.finished) {
+      // 途中停止: カーソルは保存済み。次回トリガーで続きから再開する。
+      Logger.log(buildPhoneEnrichmentInterruptedText_(summary));
+      return;
+    }
+  }
+
+  const countSummary = maybeFinalizePipeline_(summary || { finished: true, appliedCount: 0 }, true);
+  if (countSummary) {
+    Logger.log(`再判定〜コムデスクCSV出力〜件数サマリーが完了しました。営業対象: ${countSummary.total営業対象}件`);
+  }
 }

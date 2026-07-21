@@ -4,9 +4,19 @@
  */
 
 // =====================================================================
-// ⚙️ 設定エリア（あなたのご自身のSerpAPIのAPIキーをここに貼り付けてください）
+// ⚙️ 設定エリア
+// SerpAPIキーはコードに直接書かず、GASのスクリプトプロパティ
+// （ファイル > プロジェクトの設定 > スクリプト プロパティ）に
+//   SERPAPI_API_KEY = <あなたのAPIキー>
+// として登録してください。未設定の場合、SerpAPI補完はスキップされます。
 // =====================================================================
-const SERPAPI_KEY = "df3a6435db2e72dfc9431ac13e752eaf5d4bc60e68a50617471bd09a0d73696f";
+function getSerpApiKeyOrEmpty_() {
+  try {
+    return PropertiesService.getScriptProperties().getProperty("SERPAPI_API_KEY") || "";
+  } catch (e) {
+    return "";
+  }
+}
 
 // =====================================================================
 // スプレッドシートを開いた時に自動でオリジナルメニューを作る関数
@@ -336,6 +346,7 @@ function executeGenerateSalesList() {
 
   let apiCallCount = 0;
   let currentProgress = 0;
+  const SERPAPI_KEY = getSerpApiKeyOrEmpty_();
   if (SERPAPI_KEY !== "YOUR_SERPAPI_API_KEY_HERE" && SERPAPI_KEY !== "") {
     for (let i = 1; i < values.length; i++) {
       const isUnique = (String(values[i][dupIdx]).trim() === "ユニーク");
